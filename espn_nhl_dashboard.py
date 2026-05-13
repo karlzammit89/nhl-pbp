@@ -135,22 +135,18 @@ def get_parsed_plays(event_id: str) -> list:
     resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
     raw_plays = resp.json().get("plays", [])
     plays = []
+    
     for p in raw_plays:
-        # --- EXTRACT SKATER COUNTS ---
+        # --- ROBUST SITUATION EXTRACTION ---
         sit = p.get("situation", {})
-        # Use .get() and fallback to 5 to avoid NoneType errors
+        # Fallback to 5 to avoid NoneType errors and empty filters
         away_s = sit.get("awaySkaters", 5)
         home_s = sit.get("homeSkaters", 5)
-
-        # If the API uses 'onIce' lists instead, we count the players
-        if not away_s and "awayTeam" in sit:
-            away_s = len(sit["awayTeam"].get("onIce", []))
-        if not home_s and "homeTeam" in sit:
-            home_s = len(sit["homeTeam"].get("onIce", []))
-
-# Create the display label
-strength_label = f"{away_s}v{home_s}"
         
+        # Calculate strength label for display
+        strength_label = f"{away_s}v{home_s}"
+        
+        # Standard play data
         p_obj = p.get("period", {})
         t_obj = p.get("type", {})
         text = p.get("text", "")
@@ -161,15 +157,16 @@ strength_label = f"{away_s}v{home_s}"
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": t_obj.get("text", ""),
             "text": text,
-            "strength": strength_label,      # For display
-            "away_skaters": away_s,          # For filtering
-            "home_skaters": home_s,          # For filtering
+            "strength": strength_label,      # Displayed in header
+            "away_skaters": away_s,          # Used by filters
+            "home_skaters": home_s,          # Used by filters
             "wall_et": fmt_et_full(p.get("wallclock", "")),
             "wall_dt": to_et(p.get("wallclock", "")),
             "away_score": p.get("awayScore", ""),
             "home_score": p.get("homeScore", ""),
             "emoji": get_play_emoji(text),
         })
+    
     plays.sort(key=lambda x: x["seq"])
     st.session_state.cached_plays = plays
     st.session_state.cached_event_id = event_id
@@ -261,33 +258,30 @@ if st.session_state.view == "game":
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
-            # 1. Period Filter
+            a_s = p.get("away_skaters", 5)
+            h_s = p.get("home_skaters", 5)
+
             if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
                 return False
             
-            # 2. Actual Time Filter
             if USE_TIME_FILTER and START_DT and END_DT:
                 if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
                     return False
             
-            # 3. Goal Filter
             if USE_GOAL_FILTER and p["type_text"] != "Goal":
                 return False
             
-            # 4. Power Play Filter
+            # Updated Power Play: Skaters are uneven AND no one has 6 (pulled goalie)
             if USE_PP_FILTER:
-            # A Power Play is any situation where skaters are not equal 
-            # (e.g., 5v4, 4v3, 5v3) and neither team has 6 (which usually means a pulled goalie)
-                if away_s == home_s or away_s == 6 or home_s == 6:
+                if a_s == h_s or a_s == 6 or h_s == 6:
                     return False
-
-        # Updated Goalie Pulled Check
+            
+            # Updated Goalie Pulled: Either team has 6 skaters
             if USE_GP_FILTER:
-            # Usually, a pulled goalie results in 6 skaters for one team
-                if away_s != 6 and home_s != 6:
-                return False
+                if a_s != 6 and h_s != 6:
+                    return False
                     
-                return True
+            return True
             
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
