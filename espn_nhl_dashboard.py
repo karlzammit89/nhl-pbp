@@ -14,8 +14,8 @@ st.components.v1.html("""
 <script>
 (function() {
     const orig = Intl.DateTimeFormat;
-    Intl.DateTimeFormat = function(l, o) {
-        return new orig('en-CA', o);
+    Intl.DateTimeFormat = function(l, o) { 
+        return new orig('en-CA', o); 
     };
     Intl.DateTimeFormat.supportedLocalesOf = orig.supportedLocalesOf.bind(orig);
 })();
@@ -26,26 +26,14 @@ st.components.v1.html("""
 # CONSTANTS
 # =========================
 ET = ZoneInfo("America/New_York")
-
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard"
-ESPN_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/summary"
-
-# NHL HYBRID API
-NHL_PBP = "https://api-web.nhle.com/v1/gamecenter/{}/play-by-play"
+ESPN_SUMMARY    = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/summary"
 
 PLAY_EMOJI = {
-    "goal": "🚨",
-    "penalty": "🟡",
-    "shot-on-goal": "🎯",
-    "blocked-shot": "🛡️",
-    "missed-shot": "🤦",
-    "faceoff": "🏒",
-    "hit": "💥",
-    "giveaway": "❌",
-    "takeaway": "⛹️",
-    "stoppage": "⏸️",
-    "period-start": "▶️",
-    "period-end": "⏹️",
+    "goal": "🚨", "penalty": "🟡", "shot-on-goal": "🎯",
+    "blocked-shot": "🛡️", "missed-shot": "🤦", "faceoff": "🏒",
+    "hit": "💥", "giveaway": "❌", "takeaway": "⛹️",
+    "stoppage": "⏸️", "period-start": "▶️", "period-end": "⏹️",
 }
 
 # =========================
@@ -54,18 +42,15 @@ PLAY_EMOJI = {
 for k, v in {
     "view": "schedule",
     "event_id": None,
-    "away": "",
-    "home": "",
-    "away_logo": "",
-    "home_logo": "",
-    "away_score": None,
-    "home_score": None,
+    "away": "", "home": "",
+    "away_logo": "", "home_logo": "",
+    "away_score": None, "home_score": None,
     "game_state": "",
     "filters_applied": False,
     "filtered_plays": None,
     "cached_plays": None,
     "cached_event_id": None,
-    "last_refresh": datetime.now(ET),
+    "last_refresh": datetime.now(ET), # Initialized to show on launch
     "sched_date": ddate.today(),
 }.items():
     if k not in st.session_state:
@@ -75,121 +60,62 @@ for k, v in {
 # HELPERS
 # =========================
 def to_et(raw: str):
-    if not raw:
-        return None
-
-    try:
-        return datetime.fromisoformat(
-            raw.replace("Z", "+00:00")
-        ).astimezone(ET)
-
-    except:
-        return None
-
+    if not raw: return None
+    try: return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(ET)
+    except: return None
 
 def fmt_et_full(raw: str) -> str:
-
     dt = to_et(raw)
-
-    if not dt:
-        return "N/A"
-
+    if not dt: return "N/A"
     label = "EDT" if dt.dst() != timedelta(0) else "EST"
-
     return dt.strftime(f"%Y-%m-%d %H:%M:%S {label}")
-
 
 def fmt_game_time(dt) -> str:
     return dt.strftime("%H:%M ET") if dt else "TBD"
 
-
 def get_play_emoji(type_str: str) -> str:
-
     t = (type_str or "").lower()
-
     for k, v in PLAY_EMOJI.items():
-        if k in t:
-            return v
-
+        if k in t: return v
     return "🏒"
 
-
 def period_label(period_num, period_type: str = "regulation") -> str:
-
-    if (
-        "overtime" in (period_type or "").lower()
-        or period_num > 3
-    ):
+    if "overtime" in (period_type or "").lower() or period_num > 3:
         ot_num = period_num - 3
         return f"OT{ot_num}" if ot_num > 1 else "OT"
-
-    if "shootout" in (period_type or "").lower():
-        return "SO"
-
+    if "shootout" in (period_type or "").lower(): return "SO"
     return f"P{period_num}"
 
 # =========================
-# ESPN SCOREBOARD
+# CACHED API CALLS
 # =========================
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_scoreboard(date_str: str) -> list:
-
     date_compact = date_str.replace("-", "")
-
-    resp = requests.get(
-        ESPN_SCOREBOARD,
-        params={
-            "dates": date_compact,
-            "limit": 25
-        },
-        timeout=10
-    )
-
+    resp = requests.get(ESPN_SCOREBOARD, params={"dates": date_compact, "limit": 25}, timeout=10)
     data = resp.json()
-
     games = []
-
     for event in data.get("events", []):
-
         comp = event.get("competitions", [{}])[0]
-
         status = comp.get("status", {})
-
         state_type = status.get("type", {})
-
         state = state_type.get("state", "pre")
-
+        
         raw_name = state_type.get("name", "")
-
-        display_status = (
-            "Scheduled"
-            if raw_name == "STATUS_SCHEDULED"
-            else state_type.get("shortDetail", "")
-        )
-
+        display_status = "Scheduled" if raw_name == "STATUS_SCHEDULED" else state_type.get("shortDetail", "")
+        
         competitors = comp.get("competitors", [])
-
-        away = next(
-            c for c in competitors
-            if c.get("homeAway") == "away"
-        )
-
-        home = next(
-            c for c in competitors
-            if c.get("homeAway") == "home"
-        )
-
+        away = next(c for c in competitors if c.get("homeAway") == "away")
+        home = next(c for c in competitors if c.get("homeAway") == "home")
+        
         start_dt = to_et(event.get("date", ""))
-
-        is_final = (state == "post")
-        is_live = (state == "in")
-
+        is_final, is_live = (state == "post"), (state == "in")
+        
         games.append({
             "event_id": event.get("id", ""),
             "state": state,
             "state_name": display_status,
-            "is_live": is_live,
-            "is_final": is_final,
+            "is_live": is_live, "is_final": is_final,
             "is_ot": status.get("period", 0) > 3,
             "away_abbr": away.get("team", {}).get("abbreviation", "?"),
             "home_abbr": home.get("team", {}).get("abbreviation", "?"),
@@ -200,934 +126,266 @@ def fetch_scoreboard(date_str: str) -> list:
             "has_score": is_live or is_final,
             "time_str": fmt_game_time(start_dt),
         })
-
     return sorted(games, key=lambda x: x["time_str"])
 
-# =========================
-# NHL HYBRID HELPERS
-# =========================
-@st.cache_data(ttl=30, show_spinner=False)
-def fetch_nhl_plays(event_id: str):
-
-    try:
-
-        url = NHL_PBP.format(event_id)
-
-        resp = requests.get(url, timeout=10)
-
-        data = resp.json()
-
-        plays = []
-
-        for p in data.get("plays", []):
-
-            details = p.get("details", {})
-
-            strength = details.get("strength", {})
-
-            plays.append({
-
-                "period": p.get(
-                    "periodDescriptor",
-                    {}
-                ).get("number"),
-
-                "clock": p.get("timeInPeriod"),
-
-                "type": p.get(
-                    "typeDescKey",
-                    ""
-                ),
-
-                "strength_name": strength.get(
-                    "name"
-                ),
-
-                "strength_code": strength.get(
-                    "code"
-                ),
-
-                "empty_net": details.get(
-                    "emptyNet",
-                    False
-                ),
-
-                "home_skaters": details.get(
-                    "homeSkaters"
-                ),
-
-                "away_skaters": details.get(
-                    "awaySkaters"
-                ),
-            })
-
-        return plays
-
-    except Exception as e:
-
-        print("NHL FETCH ERROR:", e)
-
-        return []
-
-
-def normalize_type(t: str):
-
-    t = (t or "").lower().strip()
-
-    mapping = {
-
-        "goal": "goal",
-
-        "shot": "shot",
-        "shot-on-goal": "shot",
-
-        "missed shot": "missed-shot",
-        "missed-shot": "missed-shot",
-
-        "blocked shot": "blocked-shot",
-        "blocked-shot": "blocked-shot",
-
-        "penalty": "penalty",
-
-        "faceoff": "faceoff",
-
-        "hit": "hit",
-
-        "stoppage": "stoppage",
-
-        "takeaway": "takeaway",
-        "giveaway": "giveaway",
-
-        "period start": "period-start",
-        "period-start": "period-start",
-
-        "period end": "period-end",
-        "period-end": "period-end",
-    }
-
-    return mapping.get(t, t)
-
-
-def match_nhl_play(espn_play, nhl_plays):
-
-    ep = espn_play.get(
-        "period",
-        {}
-    ).get("number")
-
-    ec = espn_play.get(
-        "clock",
-        {}
-    ).get("displayValue")
-
-    etype = normalize_type(
-        espn_play.get(
-            "type",
-            {}
-        ).get("text")
-    )
-
-    for np in nhl_plays:
-
-        np_period = np.get("period")
-
-        np_clock = np.get("clock")
-
-        ntype = normalize_type(
-            np.get("type")
-        )
-
-        if (
-            ep == np_period
-            and ec == np_clock
-            and etype == ntype
-        ):
-            return np
-
-    return None
-
-# =========================
-# PLAY PARSER
-# =========================
 def get_parsed_plays(event_id: str) -> list:
-
     st.session_state.last_refresh = datetime.now(ET)
-
-    if (
-        st.session_state.cached_event_id == event_id
-        and st.session_state.cached_plays
-    ):
+    
+    if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
         return st.session_state.cached_plays
-
-    # ESPN
-    resp = requests.get(
-        ESPN_SUMMARY,
-        params={"event": event_id},
-        timeout=15
-    )
-
+    
+    resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
     raw_plays = resp.json().get("plays", [])
-
-    # NHL HYBRID
-    nhl_plays = fetch_nhl_plays(event_id)
-
     plays = []
-
+    
     for p in raw_plays:
-
         text = p.get("text", "")
+        sit = p.get("situation", {})
+        sit_code = str(sit.get("situationCode", ""))
+        
+        away_s, home_s = 5, 5
+        away_g_in, home_g_in = True, True
 
-        away_s = None
-        home_s = None
+        if len(sit_code) == 4:
+            away_g_in = (sit_code[0] == '1')
+            away_s    = int(sit_code[1])
+            home_s    = int(sit_code[2])
+            home_g_in = (sit_code[3] == '1')
+        elif sit.get("awaySkaters") is not None:
+            away_s = sit.get("awaySkaters")
+            home_s = sit.get("homeSkaters")
+        
+        lower_text = text.lower()
+        if (away_s == 5 and home_s == 5) and ("power play" in lower_text or "penalty" in lower_text):
+            if "home" in lower_text: home_s = 4 
+            else: away_s = 4
 
-        away_g_in = True
-        home_g_in = True
-
-        strength_label = "Unknown"
-
-        # =========================
-        # NHL MATCH
-        # =========================
-        matched = match_nhl_play(
-            p,
-            nhl_plays
-        )
-
-        # =========================
-        # PRIORITY 1 = NHL DATA
-        # =========================
-        if matched:
-
-            away_s = matched.get(
-                "away_skaters"
-            )
-
-            home_s = matched.get(
-                "home_skaters"
-            )
-
-            empty_net = matched.get(
-                "empty_net",
-                False
-            )
-
-            strength_name = matched.get(
-                "strength_name"
-            )
-
-            strength_code = matched.get(
-                "strength_code"
-            )
-
-            # Empty net inference
-            if empty_net:
-
-                if (
-                    away_s is not None
-                    and home_s is not None
-                ):
-
-                    if away_s > home_s:
-                        home_g_in = False
-
-                    elif home_s > away_s:
-                        away_g_in = False
-
-            # Exact skater counts
-            if (
-                away_s is not None
-                and home_s is not None
-            ):
-
-                strength_label = (
-                    f"{away_s}v{home_s}"
-                )
-
-                if empty_net:
-                    strength_label += (
-                        " (Empty Net)"
-                    )
-
-            # Strength name
-            elif strength_name:
-
-                strength_label = strength_name
-
-                if empty_net:
-                    strength_label += (
-                        " (Empty Net)"
-                    )
-
-            # Strength code fallback
-            elif strength_code:
-
-                code_map = {
-                    "EV": "Even Strength",
-                    "PP": "Power Play",
-                    "SH": "Shorthanded",
-                }
-
-                strength_label = code_map.get(
-                    strength_code,
-                    strength_code
-                )
-
-                if empty_net:
-                    strength_label += (
-                        " (Empty Net)"
-                    )
-
-        # =========================
-        # ESPN FALLBACK
-        # =========================
-        else:
-
-            sit = p.get("situation") or {}
-
-            sit_code = str(
-                sit.get("situationCode") or ""
-            )
-
-            if (
-                sit_code.isdigit()
-                and len(sit_code) >= 4
-            ):
-
-                try:
-
-                    away_g_in = (
-                        sit_code[0] == "1"
-                    )
-
-                    away_s = int(
-                        sit_code[1]
-                    )
-
-                    home_s = int(
-                        sit_code[2]
-                    )
-
-                    home_g_in = (
-                        sit_code[3] == "1"
-                    )
-
-                except:
-                    pass
-
-            if away_s is None:
-                away_s = sit.get(
-                    "awaySkaters"
-                )
-
-            if home_s is None:
-                home_s = sit.get(
-                    "homeSkaters"
-                )
-
-            if (
-                away_s is not None
-                and home_s is not None
-            ):
-
-                strength_label = (
-                    f"{away_s}v{home_s}"
-                )
-
-                if (
-                    not away_g_in
-                    or not home_g_in
-                ):
-                    strength_label += (
-                        " (Empty Net)"
-                    )
-
-        # =========================
-        # FINAL PLAY OBJECT
-        # =========================
+        strength_label = f"{away_s}v{home_s}"
+        if not away_g_in or not home_g_in:
+            strength_label += " (Empty Net)"
+        
         plays.append({
-
-            "seq": int(
-                p.get(
-                    "sequenceNumber",
-                    0
-                )
-            ),
-
-            "period_label": period_label(
-                p.get(
-                    "period",
-                    {}
-                ).get("number", 1),
-
-                p.get(
-                    "period",
-                    {}
-                ).get("type", "")
-            ),
-
-            "clock": p.get(
-                "clock",
-                {}
-            ).get("displayValue", ""),
-
-            "type_text": p.get(
-                "type",
-                {}
-            ).get("text", ""),
-
+            "seq": int(p.get("sequenceNumber", 0)),
+            "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
+            "clock": p.get("clock", {}).get("displayValue", ""),
+            "type_text": p.get("type", {}).get("text", ""),
             "text": text,
-
             "strength": strength_label,
-
             "away_skaters": away_s,
             "home_skaters": home_s,
-
             "away_g_in": away_g_in,
             "home_g_in": home_g_in,
-
-            "wall_et": fmt_et_full(
-                p.get("wallclock", "")
-            ),
-
-            "wall_dt": to_et(
-                p.get("wallclock", "")
-            ),
-
-            "away_score": p.get(
-                "awayScore",
-                ""
-            ),
-
-            "home_score": p.get(
-                "homeScore",
-                ""
-            ),
-
+            "wall_et": fmt_et_full(p.get("wallclock", "")),
+            "wall_dt": to_et(p.get("wallclock", "")),
+            "away_score": p.get("awayScore", ""),
+            "home_score": p.get("homeScore", ""),
             "emoji": get_play_emoji(text),
         })
-
-    plays.sort(
-        key=lambda x: x["seq"]
-    )
-
+    
+    plays.sort(key=lambda x: x["seq"])
     st.session_state.cached_plays = plays
-
     st.session_state.cached_event_id = event_id
-
     return plays
 
 # ======================================================
 # GAME FEED VIEW
 # ======================================================
 if st.session_state.view == "game":
-
-    plays = get_parsed_plays(
-        st.session_state.event_id
-    )
-
-    nav_col1, nav_col2, nav_col3, _ = st.columns(
-        [1.3, 1, 1.8, 5.9]
-    )
-
+    plays = get_parsed_plays(st.session_state.event_id)
+    
+    nav_col1, nav_col2, nav_col3, _ = st.columns([1.3, 1, 1.8, 5.9])
     with nav_col1:
-
-        if st.button(
-            "⬅ Back to Schedule",
-            use_container_width=True
-        ):
-
+        if st.button("⬅ Back to Schedule", use_container_width=True):
             st.session_state.view = "schedule"
-
             st.session_state.filters_applied = False
-
             st.session_state.filtered_plays = None
-
             st.rerun()
-
     with nav_col2:
-
-        if st.button(
-            "🔄 Refresh",
-            use_container_width=True
-        ):
-
+        if st.button("🔄 Refresh", use_container_width=True):
             st.session_state.cached_plays = None
-
             st.rerun()
-
     with nav_col3:
-
-        refresh_time = (
-            st.session_state.last_refresh.strftime(
-                "%H:%M:%S ET"
-            )
-        )
-
+        refresh_time = st.session_state.last_refresh.strftime("%H:%M:%S ET")
         st.markdown(f'''
-            <div style="
-                background-color:#2e7d32;
-                color:white;
-                padding:8px 16px;
-                border-radius:4px;
-                font-size:14px;
-                font-weight:bold;
-                text-align:center;
-            ">
+            <div style="background-color:#2e7d32;color:white;padding:8px 16px;border-radius:4px;font-size:14px;font-weight:bold;text-align:center;">
                 Last refresh {refresh_time}
             </div>
         ''', unsafe_allow_html=True)
-
+            
     st.markdown("<br>", unsafe_allow_html=True)
-
-    head_c1, head_c2, head_c3 = st.columns(
-        [1, 6, 1]
-    )
-
-    with head_c1:
-        st.image(
-            st.session_state.away_logo,
-            width=80
-        )
-
+    head_c1, head_c2, head_c3 = st.columns([1, 6, 1])
+    with head_c1: 
+        st.image(st.session_state.away_logo, width=80)
     with head_c2:
-
         st.markdown(f"""
-            <div style="
-                display:flex;
-                align-items:center;
-                justify-content:center;
-                font-weight:800;
-                font-size:clamp(20px,3vw,32px);
-                gap:15px;
-                text-align:center;
-            ">
+            <div style="display:flex;align-items:center;justify-content:center;font-weight:800;font-size:clamp(20px,3vw,32px);gap:15px;text-align:center;">
                 <span>{st.session_state.away}</span>
-                <span style="color:#888;">
-                    {st.session_state.away_score}
-                </span>
+                <span style="color:#888;">{st.session_state.away_score}</span>
                 <span style="color:#444;">-</span>
-                <span style="color:#888;">
-                    {st.session_state.home_score}
-                </span>
+                <span style="color:#888;">{st.session_state.home_score}</span>
                 <span>{st.session_state.home}</span>
             </div>
         """, unsafe_allow_html=True)
-
-    with head_c3:
-        st.image(
-            st.session_state.home_logo,
-            width=80
-        )
-
+    with head_c3: 
+        st.image(st.session_state.home_logo, width=80)
     st.divider()
 
-    # =========================
-    # FILTERS
-    # =========================
-    raw_periods = list({
-        p["period_label"] for p in plays
-    })
-
+    # 4. Filter Section
+    raw_periods = list({p["period_label"] for p in plays})
     def p_key(l):
-
-        if l.startswith('P'):
-            return int(l[1:])
-
-        if l == 'OT':
-            return 100
-
-        if l.startswith('OT'):
-            return 100 + int(l[2:])
-
+        if l.startswith('P'): return int(l[1:])
+        if l == 'OT': return 100
+        if l.startswith('OT'): return 100 + int(l[2:])
         return 200
+    all_periods = sorted(raw_periods, key=p_key)
 
-    all_periods = sorted(
-        raw_periods,
-        key=p_key
-    )
+    all_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
+    game_start_default = min(all_dts) if all_dts else None
+    game_end_default   = max(all_dts) if all_dts else None
 
-    all_dts = [
-        p["wall_dt"]
-        for p in plays
-        if p["wall_dt"]
-    ]
-
-    game_start_default = (
-        min(all_dts)
-        if all_dts else None
-    )
-
-    game_end_default = (
-        max(all_dts)
-        if all_dts else None
-    )
-
-    USE_PERIOD_FILTER = st.checkbox(
-        "🏒 Filter by Period",
-        value=False
-    )
-
-    selected_periods = (
-        st.multiselect(
-            "Select Periods",
-            options=all_periods
-        )
-        if USE_PERIOD_FILTER
-        else []
-    )
-
-    USE_TIME_FILTER = st.checkbox(
-        "🕐 Filter by Actual Time (ET)",
-        value=False
-    )
-
+    USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
+    selected_periods = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
+    
+    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
     START_DT = END_DT = None
-
     if USE_TIME_FILTER:
+        def_start_date = game_start_default.date() if game_start_default else ddate.today()
+        def_end_date   = game_end_default.date()   if game_end_default   else ddate.today()
+        def_start_time = game_start_default.time() if game_start_default else dtime(19, 0)
+        def_end_time   = game_end_default.time()   if game_end_default   else dtime(23, 59)
 
-        def_start_date = (
-            game_start_default.date()
-            if game_start_default
-            else ddate.today()
-        )
-
-        def_end_date = (
-            game_end_default.date()
-            if game_end_default
-            else ddate.today()
-        )
-
-        def_start_time = (
-            game_start_default.time()
-            if game_start_default
-            else dtime(19, 0)
-        )
-
-        def_end_time = (
-            game_end_default.time()
-            if game_end_default
-            else dtime(23, 59)
-        )
-
-        st.markdown(
-            "**Start date/time (ET)**"
-        )
-
+        st.markdown("**Start date/time (ET)**")
         sc1, sc2 = st.columns(2)
-
         with sc1:
-
-            start_date_input = st.date_input(
-                "Start date",
-                value=def_start_date,
-                key="tf_start_date"
-            )
-
+            start_date_input = st.date_input("Start date", value=def_start_date, key="tf_start_date")
         with sc2:
+            start_time_input = st.time_input("Start time", value=def_start_time, step=60, key="tf_start_time")
 
-            start_time_input = st.time_input(
-                "Start time",
-                value=def_start_time,
-                step=60,
-                key="tf_start_time"
-            )
-
-        st.markdown(
-            "**End date/time (ET)**"
-        )
-
+        st.markdown("**End date/time (ET)**")
         ec1, ec2 = st.columns(2)
-
         with ec1:
-
-            end_date_input = st.date_input(
-                "End date",
-                value=def_end_date,
-                key="tf_end_date"
-            )
-
+            end_date_input = st.date_input("End date", value=def_end_date, key="tf_end_date")
         with ec2:
+            end_time_input = st.time_input("End time", value=def_end_time, step=60, key="tf_end_time")
 
-            end_time_input = st.time_input(
-                "End time",
-                value=def_end_time,
-                step=60,
-                key="tf_end_time"
-            )
+        START_DT = datetime.combine(start_date_input, start_time_input).replace(tzinfo=ET)
+        END_DT   = datetime.combine(end_date_input,   end_time_input).replace(tzinfo=ET)
 
-        START_DT = datetime.combine(
-            start_date_input,
-            start_time_input
-        ).replace(tzinfo=ET)
+    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
+    # UPDATED FILTERS BELOW
+    USE_PP_FILTER = st.checkbox("⚡ Power Plays Only", value=False)
+    USE_GP_FILTER = st.checkbox("🥅 Empty Nets Only", value=False)
 
-        END_DT = datetime.combine(
-            end_date_input,
-            end_time_input
-        ).replace(tzinfo=ET)
-
-    USE_GOAL_FILTER = st.checkbox(
-        "🚨 Goals Only",
-        value=False
-    )
-
-    USE_PP_FILTER = st.checkbox(
-        "⚡ Power Plays Only",
-        value=False
-    )
-
-    USE_GP_FILTER = st.checkbox(
-        "🥅 Empty Nets Only",
-        value=False
-    )
-
-    # =========================
-    # APPLY FILTERS
-    # =========================
     if st.button("🚀 Apply Filters"):
-
         def passes(p):
-
-            a_s = p.get(
-                "away_skaters"
-            )
-
-            h_s = p.get(
-                "home_skaters"
-            )
-
-            a_g = p.get(
-                "away_g_in",
-                True
-            )
-
-            h_g = p.get(
-                "home_g_in",
-                True
-            )
-
-            if (
-                USE_PERIOD_FILTER
-                and selected_periods
-                and p["period_label"]
-                not in selected_periods
-            ):
-                return False
-
+            a_s, h_s = p.get("away_skaters", 5), p.get("home_skaters", 5)
+            a_g, h_g = p.get("away_g_in", True), p.get("home_g_in", True)
+            
+            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: return False
             if USE_TIME_FILTER:
-
-                if (
-                    not p["wall_dt"]
-                    or START_DT is None
-                    or END_DT is None
-                ):
-                    return False
-
-                if not (
-                    START_DT
-                    <= p["wall_dt"]
-                    <= END_DT
-                ):
-                    return False
-
-            if (
-                USE_GOAL_FILTER
-                and p["type_text"] != "Goal"
-            ):
-                return False
-
-            if USE_PP_FILTER:
-
-                if (
-                    a_s is None
-                    or h_s is None
-                ):
-                    return False
-
-                if a_s == h_s:
-                    return False
-
-            if (
-                USE_GP_FILTER
-                and (a_g and h_g)
-            ):
-                return False
-
+                if not p["wall_dt"] or START_DT is None or END_DT is None: return False
+                if not (START_DT <= p["wall_dt"] <= END_DT): return False
+            if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
+            if USE_PP_FILTER and (a_s == h_s or not a_g or not h_g): return False
+            if USE_GP_FILTER and (a_g and h_g): return False
             return True
-
-        st.session_state.filtered_plays = [
-            p for p in plays if passes(p)
-        ]
-
+        st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
-
         st.rerun()
-
-    # =========================
-    # DISPLAY FILTER INFO
-    # =========================
-    filters_applied = st.session_state.get(
-        "filters_applied"
-    )
-
-    display_list = (
-        st.session_state.filtered_plays
-        if filters_applied
-        else plays
-    )
-
+        
+    # --- INFO BANNERS ---
+    filters_applied = st.session_state.get("filters_applied")
+    display_list = st.session_state.filtered_plays if filters_applied else plays
     total = len(plays)
-
     showing = len(display_list)
 
     if filters_applied:
-
         if showing == 0:
-
-            st.warning(
-                "⚠️ No results found — "
-                "please check the filters applied."
-            )
-
+            st.warning("⚠️ No results found — please check the filters applied.")
             st.stop()
 
-    # =========================
-    # RENDER PLAYS
-    # =========================
+        if USE_PERIOD_FILTER:
+            labels = selected_periods if selected_periods else ["none selected"]
+            st.info(f"🏒 **Period filter:** {', '.join(labels)} — showing **{showing}** of **{total}** plays")
+
+        if USE_TIME_FILTER:
+            st.info(f"🕐 **Time filter:** {START_DT.strftime('%Y-%m-%d %H:%M')} → {END_DT.strftime('%Y-%m-%d %H:%M')} ET — showing **{showing}** of **{total}** plays")
+
+        if USE_GOAL_FILTER:
+            n_goals = sum(1 for p in plays if p["type_text"] == "Goal")
+            st.info(f"🚨 **Goals Only filter:** {n_goals} goal(s) in game — showing **{showing}** of **{total}** plays")
+
+        if USE_PP_FILTER:
+            st.info(f"⚡ **Power Plays Only filter:** showing **{showing}** of **{total}** plays")
+
+        if USE_GP_FILTER:
+            st.info(f"🥅 **Empty Nets Only filter:** showing **{showing}** of **{total}** plays")
+
+    # Render plays
     for p in display_list:
-
-        emoji = (
-            "🚨"
-            if p.get("type_text") == "Goal"
-            else p.get("emoji", "🏒")
-        )
-
-        st.subheader(
-            f"{emoji} "
-            f"{p.get('period_label')} "
-            f"| ⏱️ {p.get('clock')}"
-        )
-
-        st.markdown(
-            f"📊 **Score:** "
-            f"{p.get('away_score')} "
-            f"- "
-            f"{p.get('home_score')}"
-        )
-
-        st.markdown(
-            f"🎯 **Event:** "
-            f"{p.get('type_text')}"
-        )
-
-        st.markdown(
-            f"⚖️ **Strength:** "
-            f"`{p.get('strength', 'Unknown')}`"
-        )
-
-        st.markdown(
-            f"📋 **Play:** "
-            f"{p.get('text')}"
-        )
-
+        emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+        st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
+        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+        st.markdown(f"🎯 **Event:** {p.get('type_text')}")
+        st.markdown(f"⚖️ **Strength:** `{p.get('strength', '5v5')}`")
+        st.markdown(f"📋 **Play:** {p.get('text')}")
         if p.get("wall_et"):
-
-            st.markdown(
-                f"🕐 **Time (ET):** "
-                f"`{p['wall_et']}`"
-            )
-
+            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
         st.divider()
 
 # ======================================================
 # SCHEDULE VIEW
 # ======================================================
 else:
-
     def handle_date_change():
+        st.session_state.sched_date = st.session_state.calendar_widget
 
-        st.session_state.sched_date = (
-            st.session_state.calendar_widget
-        )
-
-    date = st.date_input(
-        "Select date",
-        value=st.session_state.sched_date,
-        key="calendar_widget",
-        on_change=handle_date_change
-    )
-
+    date = st.date_input("Select date", value=st.session_state.sched_date, key="calendar_widget", on_change=handle_date_change)
     formatted_date = date.strftime("%Y-%m-%d")
-
     games = fetch_scoreboard(formatted_date)
 
+    st.markdown("""
+        <style>
+            .sched-team-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+            .sched-team-name { font-size: 22px; font-weight: 800; color: #ffffff; }
+            .sched-score { font-size: 22px; font-weight: 800; color: #888888; margin-left: auto; }
+            .sched-meta { font-size: 13px; color: #999999; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px; margin-top: 8px; display: flex; align-items: center; }
+            .sched-extra { background: #e67e22; color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-weight: bold; }
+        </style>
+    """, unsafe_allow_html=True)
+
     if not games:
-
-        st.info(
-            f"No games scheduled for "
-            f"{formatted_date}."
-        )
-
+        st.info(f"No games scheduled for {formatted_date}.")
     else:
-
         cols = st.columns(2)
-
         for i, g in enumerate(games):
-
             has_started = g["has_score"]
-
+            ot_badge = f'<span class="sched-extra">OT</span>' if g["is_ot"] else ""
+            card_html = f"""
+            <div class="sched-team-row">
+                <img src="{g['away_logo']}" width="34"/>
+                <span class="sched-team-name">{g['away_abbr']}</span>
+                <span class="sched-score">{g['away_score'] if has_started else ''}</span>
+            </div>
+            <div class="sched-team-row">
+                <img src="{g['home_logo']}" width="34"/>
+                <span class="sched-team-name">{g['home_abbr']}</span>
+                <span class="sched-score">{g['home_score'] if has_started else ''}</span>
+            </div>
+            <div class="sched-meta">{g['time_str']} &middot; {g['state_name']}{ot_badge}</div>
+            """
             with cols[i % 2]:
-
                 with st.container(border=True):
-
-                    st.markdown(f"""
-                    ### {g['away_abbr']} @ {g['home_abbr']}
-
-                    {g['time_str']}
-
-                    Score:
-                    {g['away_score']} - {g['home_score']}
-                    """)
-
-                    btn_label = (
-                        f"▶ Open "
-                        f"{g['away_abbr']} "
-                        f"@ "
-                        f"{g['home_abbr']}"
-                        if has_started
-                        else "⏳ Not Started"
-                    )
-
-                    if st.button(
-                        btn_label,
-                        key=f"btn_{g['event_id']}",
-                        use_container_width=True,
-                        disabled=not has_started
-                    ):
-
+                    st.markdown(card_html, unsafe_allow_html=True)
+                    btn_label = f"▶ Open {g['away_abbr']} @ {g['home_abbr']}" if has_started else "⏳ Not Started"
+                    tooltip = "" if has_started else "Data will be available once the game starts."
+                    if st.button(btn_label, key=f"btn_{g['event_id']}", use_container_width=True, disabled=not has_started, help=tooltip):
                         st.session_state.update({
-
-                            "view": "game",
-
-                            "event_id": g["event_id"],
-
-                            "away": g["away_abbr"],
-                            "home": g["home_abbr"],
-
-                            "away_logo": g["away_logo"],
-                            "home_logo": g["home_logo"],
-
-                            "away_score": g["away_score"],
-                            "home_score": g["home_score"],
-
-                            "game_state": g["state"],
-
-                            "filters_applied": False,
-
-                            "filtered_plays": None,
-
-                            "cached_plays": None,
-
-                            "cached_event_id": None
+                            "view": "game", "event_id": g["event_id"],
+                            "away": g["away_abbr"], "home": g["home_abbr"],
+                            "away_logo": g["away_logo"], "home_logo": g["home_logo"],
+                            "away_score": g["away_score"], "home_score": g["home_score"],
+                            "game_state": g["state"], "filters_applied": False,
+                            "filtered_plays": None, "cached_plays": None, "cached_event_id": None
                         })
-
                         st.rerun()
