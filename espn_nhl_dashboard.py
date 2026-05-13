@@ -131,66 +131,41 @@ def fetch_scoreboard(date_str: str) -> list:
 def get_parsed_plays(event_id: str) -> list:
     st.session_state.last_refresh = datetime.now(ET)
     
-    if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
-        return st.session_state.cached_plays
-    
+    # We remove the cache check here temporarily to force a clean update
     try:
         resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
         resp.raise_for_status()
-        raw_plays = resp.json().get("plays", [])
+        data = resp.json()
+        raw_plays = data.get("plays", [])
     except Exception as e:
-        st.error(f"API Connection Error: {e}")
+        st.error(f"API Error: {e}")
         return []
 
     plays = []
     for p in raw_plays:
+        # PURE SITUATION LOGIC
         sit = p.get("situation", {})
-        # The 4-digit code: [AwayG][AwayS][HomeS][HomeG]
-        sit_code = str(sit.get("situationCode", ""))
+        code = str(sit.get("situationCode", ""))
         
-        # If the API provides no situation data, we default to 5v5 
-        # but ONLY as a last resort if sit_code is missing.
+        # Default if code is missing: 1551 (AwayG-AwayS-HomeS-HomeG)
         a_g, a_s, h_s, h_g = 1, 5, 5, 1 
 
-        if len(sit_code) == 4:
-            a_g = int(sit_code[0])
-            a_s = int(sit_code[1])
-            h_s = int(sit_code[2])
-            h_g = int(sit_code[3])
+        if len(code) == 4:
+            a_g = int(code[0])
+            a_s = int(code[1])
+            h_s = int(code[2])
+            h_g = int(code[3])
         
-        # 1. Determine Label
-        label = f"{a_s}v{h_s}"
-        
-        # 2. Determine Style (Empty Net vs PP vs Regular)
-        bg_color = "#34495e" # Regular (Gray)
-        
-        if a_g == 0:
-            label += " (Away EN)"
-            bg_color = "#e67e22" # Orange
-        elif h_g == 0:
-            label += " (Home EN)"
-            bg_color = "#e67e22" # Orange
-        elif a_s != h_s:
-            label += " (PP)"
-            bg_color = "#2980b9" # Blue
-
-        strength_html = f"""
-            <span style="background:{bg_color}; color:white; padding:2px 10px; 
-            border-radius:10px; font-size:12px; font-weight:bold; display:inline-block;">
-                {label}
-            </span>
-        """
-
+        # We store the RAW integers so the UI can decide how to color them
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
             "period_label": period_label(p.get("period", {}).get("number", 1)),
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": p.get("type", {}).get("text", ""),
             "text": p.get("text", ""),
-            "strength": label, # For filtering
-            "strength_html": strength_html, # For display
             "away_score": p.get("awayScore", 0),
             "home_score": p.get("homeScore", 0),
+            "a_g": a_g, "a_s": a_s, "h_s": h_s, "h_g": h_g, # Raw states
             "emoji": get_play_emoji(p.get("text", "")),
             "wall_et": fmt_et_full(p.get("wallclock", ""))
         })
@@ -278,11 +253,31 @@ if st.session_state.view == "game":
     st.info(f"Showing {len(display_list)} of {len(plays)} plays.")
 
     for p in display_list:
+        # RE-CALCULATE STRENGTH FOR UI
+        a_g, a_s, h_s, h_g = p["a_g"], p["a_s"], p["h_s"], p["h_g"]
+        
+        label = f"{a_s}v{h_s}"
+        bg_color = "#34495e" # Default Gray
+
+        if a_g == 0:
+            label += " (Away EN)"
+            bg_color = "#e67e22" # Orange
+        elif h_g == 0:
+            label += " (Home EN)"
+            bg_color = "#e67e22" # Orange
+        elif a_s != h_s:
+            label += " (PP)"
+            bg_color = "#2980b9" # Blue
+
         emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+        
         st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
         st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
-        st.markdown(f"🎯 **Event:** {p.get('type_text')}")
-        st.markdown(f"⚖️ Strength: {p.get('strength_html')}", unsafe_allow_html=True)
+        
+        # THE FIX: Render the badge directly
+        badge_html = f'<span style="background:{bg_color}; color:white; padding:2px 10px; border-radius:10px; font-weight:bold;">{label}</span>'
+        st.markdown(f"⚖️ **Strength:** {badge_html}", unsafe_allow_html=True)
+        
         st.markdown(f"📋 **Play:** {p.get('text')}")
         if p.get("wall_et"):
             st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
