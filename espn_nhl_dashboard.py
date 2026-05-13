@@ -135,17 +135,15 @@ def get_parsed_plays(event_id: str) -> list:
     resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
     raw_plays = resp.json().get("plays", [])
     plays = []
-    
     for p in raw_plays:
-        # --- NEW STRENGTH LOGIC ---
+        # --- EXTRACT SKATER COUNTS ---
         sit = p.get("situation", {})
         away_s = sit.get("awaySkaters")
         home_s = sit.get("homeSkaters")
-
-        # Only generate a label if both skater counts are present
+        
+        # Create display label (e.g., "5v4")
         strength_label = f"{away_s}v{home_s}" if away_s is not None and home_s is not None else ""
-        # --------------------------
-
+        
         p_obj = p.get("period", {})
         t_obj = p.get("type", {})
         text = p.get("text", "")
@@ -156,14 +154,15 @@ def get_parsed_plays(event_id: str) -> list:
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": t_obj.get("text", ""),
             "text": text,
-            "strength": strength_label,  # Add this to the dictionary
+            "strength": strength_label,      # For display
+            "away_skaters": away_s,          # For filtering
+            "home_skaters": home_s,          # For filtering
             "wall_et": fmt_et_full(p.get("wallclock", "")),
             "wall_dt": to_et(p.get("wallclock", "")),
             "away_score": p.get("awayScore", ""),
             "home_score": p.get("homeScore", ""),
             "emoji": get_play_emoji(text),
         })
-    
     plays.sort(key=lambda x: x["seq"])
     st.session_state.cached_plays = plays
     st.session_state.cached_event_id = event_id
@@ -220,37 +219,39 @@ if st.session_state.view == "game":
     def p_key(l):
         if l.startswith('P'): return int(l[1:])
         if l == 'OT': return 100
-        if l.startswith('OT'): return 100 + int(l[2:])
         return 200
     all_periods = sorted(raw_periods, key=p_key)
 
     USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
     selected_periods = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
 
-    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
-    START_DT = END_DT = None
-    if USE_TIME_FILTER:
-        all_wall_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
-        game_start = min(all_wall_dts) if all_wall_dts else datetime.now(ET)
-        game_end   = max(all_wall_dts) if all_wall_dts else datetime.now(ET)
-        sc1, sc2 = st.columns(2)
-        with sc1:
-            s_date = st.date_input("Start date", value=game_start.date())
-            s_time = st.time_input("Start time", value=game_start.time())
-        with sc2:
-            e_date = st.date_input("End date", value=game_end.date())
-            e_time = st.time_input("End time", value=game_end.time())
-        START_DT = datetime.combine(s_date, s_time).replace(tzinfo=ET)
-        END_DT   = datetime.combine(e_date, e_time).replace(tzinfo=ET)
-
-    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
+    # --- NEW FILTERS ---
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
+    with col_f2:
+        USE_PP_FILTER = st.checkbox("🏒 Power Plays (5v4/4v5)", value=False)
+    with col_f3:
+        USE_GP_FILTER = st.checkbox("🥅 Goalie Pulled (6v5/5v6)", value=False)
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
             if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: return False
-            if USE_TIME_FILTER and START_DT and END_DT and (not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT)): return False
             if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
+            
+            # Power Play Check
+            if USE_PP_FILTER:
+                skaters = {p.get("away_skaters"), p.get("home_skaters")}
+                if skaters != {5, 4} and skaters != {4, 3} and skaters != {5, 3}:
+                    return False
+            
+            # Goalie Pulled Check
+            if USE_GP_FILTER:
+                if p.get("away_skaters") != 6 and p.get("home_skaters") != 6:
+                    return False
+                    
             return True
+            
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
 
@@ -260,21 +261,21 @@ if st.session_state.view == "game":
         st.info(f"Showing **{len(display_list)}** of **{len(plays)}** plays.")
 
     if not display_list:
-        st.warning("No plays found.")
+        st.warning("No plays found for the selected filters.")
     else:
         for p in display_list:
             emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
-    
-            # Use .get() to avoid KeyErrors and format the badge
-            strength = p.get("strength", "")
-            strength_badge = f" | `{strength}`" if strength else ""
-    
-            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}{strength_badge}")
-    
+            
+            # Use 5v5 as a fallback if data is missing
+            strength = p.get("strength") or "5v5"
+            
+            # Header with Period | Clock | Strength Badge
+            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']} | `{strength}`")
+            
             st.markdown(f"🎯 **Event:** {p['type_text']}")
             st.markdown(f"📋 **Play:** {p['text']}")
             st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
-    
+            
             if p["wall_et"]:
                 st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
             st.divider()
