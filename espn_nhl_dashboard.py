@@ -243,8 +243,39 @@ if st.session_state.view == "game":
         return 200
     all_periods = sorted(raw_periods, key=p_key)
 
+    # Filter by Actual Time Defaults
+    all_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
+    game_start_default = min(all_dts) if all_dts else None
+    game_end_default   = max(all_dts) if all_dts else None
+
     USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
     selected_periods = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
+    
+    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
+    START_DT = END_DT = None
+    if USE_TIME_FILTER:
+        def_start_date = game_start_default.date() if game_start_default else ddate.today()
+        def_end_date   = game_end_default.date()   if game_end_default   else ddate.today()
+        def_start_time = game_start_default.time() if game_start_default else dtime(19, 0)
+        def_end_time   = game_end_default.time()   if game_end_default   else dtime(23, 59)
+
+        st.markdown("**Start date/time (ET)**")
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            start_date_input = st.date_input("Start date", value=def_start_date, key="tf_start_date")
+        with sc2:
+            start_time_input = st.time_input("Start time", value=def_start_time, step=60, key="tf_start_time")
+
+        st.markdown("**End date/time (ET)**")
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            end_date_input = st.date_input("End date", value=def_end_date, key="tf_end_date")
+        with ec2:
+            end_time_input = st.time_input("End time", value=def_end_time, step=60, key="tf_end_time")
+
+        START_DT = datetime.combine(start_date_input, start_time_input).replace(tzinfo=ET)
+        END_DT   = datetime.combine(end_date_input,   end_time_input).replace(tzinfo=ET)
+
     USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
     USE_PP_FILTER = st.checkbox("🏒 Power Plays", value=False)
     USE_GP_FILTER = st.checkbox("🥅 Goalie Pulled", value=False)
@@ -253,7 +284,11 @@ if st.session_state.view == "game":
         def passes(p):
             a_s, h_s = p.get("away_skaters", 5), p.get("home_skaters", 5)
             a_g, h_g = p.get("away_g_in", True), p.get("home_g_in", True)
+            
             if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: return False
+            if USE_TIME_FILTER:
+                if not p["wall_dt"] or START_DT is None or END_DT is None: return False
+                if not (START_DT <= p["wall_dt"] <= END_DT): return False
             if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
             if USE_PP_FILTER and (a_s == h_s or not a_g or not h_g): return False
             if USE_GP_FILTER and (a_g and h_g): return False
