@@ -136,7 +136,6 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
-    # This ensures the badge updates every time the data is pulled
     st.session_state.last_refresh = datetime.now(ET)
     
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
@@ -145,27 +144,34 @@ def get_parsed_plays(event_id: str) -> list:
     resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
     raw_plays = resp.json().get("plays", [])
     plays = []
+    
     for p in raw_plays:
+        # --- NEW STRENGTH LOGIC ---
+        sit = p.get("situation", {})
+        away_skaters = sit.get("awaySkaters", 0)
+        home_skaters = sit.get("homeSkaters", 0)
+        
+        # Only create the label if both values exist (usually 1-6)
+        strength_label = f"{away_skaters}v{home_skaters}" if away_skaters and home_skaters else ""
+        # --------------------------
+
         p_obj = p.get("period", {})
-        pnum = p_obj.get("number", 1)
-        ptype = p_obj.get("type", "")
         t_obj = p.get("type", {})
-        text = p.get("text", "")
         
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
-            "period_label": period_label(pnum, ptype),
+            "period_label": period_label(p_obj.get("number", 1), p_obj.get("type", "")),
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": t_obj.get("text", ""),
-            "text": text,
+            "text": p.get("text", ""),
+            "strength": strength_label,  # Add this to the dictionary
             "wall_et": fmt_et_full(p.get("wallclock", "")),
             "wall_dt": to_et(p.get("wallclock", "")),
             "away_score": p.get("awayScore", ""),
             "home_score": p.get("homeScore", ""),
-            "is_goal": "goal" in text.lower(),
-            "is_penalty": "penalty" in text.lower(),
-            "emoji": get_play_emoji(text),
+            "emoji": get_play_emoji(p.get("text", "")),
         })
+    
     plays.sort(key=lambda x: x["seq"])
     st.session_state.cached_plays = plays
     st.session_state.cached_event_id = event_id
@@ -310,6 +316,7 @@ if st.session_state.view == "game":
     else:
         for p in display_list:
             emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
+            strength_badge = f" | `{p['strength']}`" if p["strength"] else ""
             st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}")
             st.markdown(f"🎯 **Event:** {p['type_text']}")
             st.markdown(f"📋 **Play:** {p['text']}")
