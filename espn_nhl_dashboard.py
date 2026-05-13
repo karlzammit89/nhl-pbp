@@ -30,7 +30,7 @@ ET = ZoneInfo("America/New_York")
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard"
 ESPN_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/summary"
 
-# HYBRID NHL API
+# NHL HYBRID API
 NHL_PBP = "https://api-web.nhle.com/v1/gamecenter/{}/play-by-play"
 
 PLAY_EMOJI = {
@@ -82,11 +82,13 @@ def to_et(raw: str):
         return datetime.fromisoformat(
             raw.replace("Z", "+00:00")
         ).astimezone(ET)
+
     except:
         return None
 
 
 def fmt_et_full(raw: str) -> str:
+
     dt = to_et(raw)
 
     if not dt:
@@ -102,6 +104,7 @@ def fmt_game_time(dt) -> str:
 
 
 def get_play_emoji(type_str: str) -> str:
+
     t = (type_str or "").lower()
 
     for k, v in PLAY_EMOJI.items():
@@ -112,7 +115,11 @@ def get_play_emoji(type_str: str) -> str:
 
 
 def period_label(period_num, period_type: str = "regulation") -> str:
-    if "overtime" in (period_type or "").lower() or period_num > 3:
+
+    if (
+        "overtime" in (period_type or "").lower()
+        or period_num > 3
+    ):
         ot_num = period_num - 3
         return f"OT{ot_num}" if ot_num > 1 else "OT"
 
@@ -203,6 +210,7 @@ def fetch_scoreboard(date_str: str) -> list:
 def fetch_nhl_plays(event_id: str):
 
     try:
+
         url = NHL_PBP.format(event_id)
 
         resp = requests.get(url, timeout=10)
@@ -218,43 +226,121 @@ def fetch_nhl_plays(event_id: str):
             strength = details.get("strength", {})
 
             plays.append({
-                "period": p.get("periodDescriptor", {}).get("number"),
+
+                "period": p.get(
+                    "periodDescriptor",
+                    {}
+                ).get("number"),
+
                 "clock": p.get("timeInPeriod"),
-                "type": p.get("typeDescKey", ""),
-                "strength_name": strength.get("name"),
-                "strength_code": strength.get("code"),
-                "empty_net": details.get("emptyNet", False),
-                "home_skaters": details.get("homeSkaters"),
-                "away_skaters": details.get("awaySkaters"),
+
+                "type": p.get(
+                    "typeDescKey",
+                    ""
+                ),
+
+                "strength_name": strength.get(
+                    "name"
+                ),
+
+                "strength_code": strength.get(
+                    "code"
+                ),
+
+                "empty_net": details.get(
+                    "emptyNet",
+                    False
+                ),
+
+                "home_skaters": details.get(
+                    "homeSkaters"
+                ),
+
+                "away_skaters": details.get(
+                    "awaySkaters"
+                ),
             })
 
         return plays
 
-    except:
+    except Exception as e:
+
+        print("NHL FETCH ERROR:", e)
+
         return []
+
+
+def normalize_type(t: str):
+
+    t = (t or "").lower().strip()
+
+    mapping = {
+
+        "goal": "goal",
+
+        "shot": "shot",
+        "shot-on-goal": "shot",
+
+        "missed shot": "missed-shot",
+        "missed-shot": "missed-shot",
+
+        "blocked shot": "blocked-shot",
+        "blocked-shot": "blocked-shot",
+
+        "penalty": "penalty",
+
+        "faceoff": "faceoff",
+
+        "hit": "hit",
+
+        "stoppage": "stoppage",
+
+        "takeaway": "takeaway",
+        "giveaway": "giveaway",
+
+        "period start": "period-start",
+        "period-start": "period-start",
+
+        "period end": "period-end",
+        "period-end": "period-end",
+    }
+
+    return mapping.get(t, t)
 
 
 def match_nhl_play(espn_play, nhl_plays):
 
-    ep = espn_play.get("period", {}).get("number")
+    ep = espn_play.get(
+        "period",
+        {}
+    ).get("number")
 
-    ec = espn_play.get("clock", {}).get("displayValue")
+    ec = espn_play.get(
+        "clock",
+        {}
+    ).get("displayValue")
 
-    etype = (
-        espn_play.get("type", {}).get("text") or ""
-    ).lower()
+    etype = normalize_type(
+        espn_play.get(
+            "type",
+            {}
+        ).get("text")
+    )
 
     for np in nhl_plays:
 
-        ntype = (np.get("type") or "").lower()
+        np_period = np.get("period")
+
+        np_clock = np.get("clock")
+
+        ntype = normalize_type(
+            np.get("type")
+        )
 
         if (
-            np["period"] == ep
-            and np["clock"] == ec
-            and (
-                etype in ntype
-                or ntype in etype
-            )
+            ep == np_period
+            and ec == np_clock
+            and etype == ntype
         ):
             return np
 
@@ -291,9 +377,6 @@ def get_parsed_plays(event_id: str) -> list:
 
         text = p.get("text", "")
 
-        # =========================
-        # DEFAULTS
-        # =========================
         away_s = None
         home_s = None
 
@@ -305,39 +388,97 @@ def get_parsed_plays(event_id: str) -> list:
         # =========================
         # NHL MATCH
         # =========================
-        matched = match_nhl_play(p, nhl_plays)
+        matched = match_nhl_play(
+            p,
+            nhl_plays
+        )
 
         # =========================
         # PRIORITY 1 = NHL DATA
         # =========================
         if matched:
 
-            away_s = matched.get("away_skaters")
-            home_s = matched.get("home_skaters")
+            away_s = matched.get(
+                "away_skaters"
+            )
 
-            empty_net = matched.get("empty_net", False)
+            home_s = matched.get(
+                "home_skaters"
+            )
 
+            empty_net = matched.get(
+                "empty_net",
+                False
+            )
+
+            strength_name = matched.get(
+                "strength_name"
+            )
+
+            strength_code = matched.get(
+                "strength_code"
+            )
+
+            # Empty net inference
             if empty_net:
 
-                if away_s and away_s > home_s:
-                    home_g_in = False
+                if (
+                    away_s is not None
+                    and home_s is not None
+                ):
 
-                elif home_s and home_s > away_s:
-                    away_g_in = False
+                    if away_s > home_s:
+                        home_g_in = False
 
-            if away_s is not None and home_s is not None:
+                    elif home_s > away_s:
+                        away_g_in = False
 
-                strength_label = f"{away_s}v{home_s}"
+            # Exact skater counts
+            if (
+                away_s is not None
+                and home_s is not None
+            ):
+
+                strength_label = (
+                    f"{away_s}v{home_s}"
+                )
 
                 if empty_net:
-                    strength_label += " (Empty Net)"
+                    strength_label += (
+                        " (Empty Net)"
+                    )
 
-            elif matched.get("strength_name"):
+            # Strength name
+            elif strength_name:
 
-                strength_label = matched.get("strength_name")
+                strength_label = strength_name
+
+                if empty_net:
+                    strength_label += (
+                        " (Empty Net)"
+                    )
+
+            # Strength code fallback
+            elif strength_code:
+
+                code_map = {
+                    "EV": "Even Strength",
+                    "PP": "Power Play",
+                    "SH": "Shorthanded",
+                }
+
+                strength_label = code_map.get(
+                    strength_code,
+                    strength_code
+                )
+
+                if empty_net:
+                    strength_label += (
+                        " (Empty Net)"
+                    )
 
         # =========================
-        # PRIORITY 2 = ESPN FALLBACK
+        # ESPN FALLBACK
         # =========================
         else:
 
@@ -351,59 +492,126 @@ def get_parsed_plays(event_id: str) -> list:
                 sit_code.isdigit()
                 and len(sit_code) >= 4
             ):
+
                 try:
-                    away_g_in = sit_code[0] == "1"
-                    away_s = int(sit_code[1])
-                    home_s = int(sit_code[2])
-                    home_g_in = sit_code[3] == "1"
+
+                    away_g_in = (
+                        sit_code[0] == "1"
+                    )
+
+                    away_s = int(
+                        sit_code[1]
+                    )
+
+                    home_s = int(
+                        sit_code[2]
+                    )
+
+                    home_g_in = (
+                        sit_code[3] == "1"
+                    )
 
                 except:
                     pass
 
             if away_s is None:
-                away_s = sit.get("awaySkaters")
+                away_s = sit.get(
+                    "awaySkaters"
+                )
 
             if home_s is None:
-                home_s = sit.get("homeSkaters")
+                home_s = sit.get(
+                    "homeSkaters"
+                )
 
             if (
                 away_s is not None
                 and home_s is not None
             ):
 
-                strength_label = f"{away_s}v{home_s}"
+                strength_label = (
+                    f"{away_s}v{home_s}"
+                )
 
-                if not away_g_in or not home_g_in:
-                    strength_label += " (Empty Net)"
+                if (
+                    not away_g_in
+                    or not home_g_in
+                ):
+                    strength_label += (
+                        " (Empty Net)"
+                    )
 
+        # =========================
+        # FINAL PLAY OBJECT
+        # =========================
         plays.append({
-            "seq": int(p.get("sequenceNumber", 0)),
-            "period_label": period_label(
-                p.get("period", {}).get("number", 1),
-                p.get("period", {}).get("type", "")
+
+            "seq": int(
+                p.get(
+                    "sequenceNumber",
+                    0
+                )
             ),
-            "clock": p.get("clock", {}).get("displayValue", ""),
-            "type_text": p.get("type", {}).get("text", ""),
+
+            "period_label": period_label(
+                p.get(
+                    "period",
+                    {}
+                ).get("number", 1),
+
+                p.get(
+                    "period",
+                    {}
+                ).get("type", "")
+            ),
+
+            "clock": p.get(
+                "clock",
+                {}
+            ).get("displayValue", ""),
+
+            "type_text": p.get(
+                "type",
+                {}
+            ).get("text", ""),
+
             "text": text,
+
             "strength": strength_label,
+
             "away_skaters": away_s,
             "home_skaters": home_s,
+
             "away_g_in": away_g_in,
             "home_g_in": home_g_in,
+
             "wall_et": fmt_et_full(
                 p.get("wallclock", "")
             ),
+
             "wall_dt": to_et(
                 p.get("wallclock", "")
             ),
-            "away_score": p.get("awayScore", ""),
-            "home_score": p.get("homeScore", ""),
+
+            "away_score": p.get(
+                "awayScore",
+                ""
+            ),
+
+            "home_score": p.get(
+                "homeScore",
+                ""
+            ),
+
             "emoji": get_play_emoji(text),
         })
 
-    plays.sort(key=lambda x: x["seq"])
+    plays.sort(
+        key=lambda x: x["seq"]
+    )
 
     st.session_state.cached_plays = plays
+
     st.session_state.cached_event_id = event_id
 
     return plays
@@ -422,44 +630,58 @@ if st.session_state.view == "game":
     )
 
     with nav_col1:
+
         if st.button(
             "⬅ Back to Schedule",
             use_container_width=True
         ):
+
             st.session_state.view = "schedule"
+
             st.session_state.filters_applied = False
+
             st.session_state.filtered_plays = None
+
             st.rerun()
 
     with nav_col2:
+
         if st.button(
             "🔄 Refresh",
             use_container_width=True
         ):
+
             st.session_state.cached_plays = None
+
             st.rerun()
 
     with nav_col3:
 
-        refresh_time = st.session_state.last_refresh.strftime(
-            "%H:%M:%S ET"
+        refresh_time = (
+            st.session_state.last_refresh.strftime(
+                "%H:%M:%S ET"
+            )
         )
 
         st.markdown(f'''
-            <div style="background-color:#2e7d32;
-                        color:white;
-                        padding:8px 16px;
-                        border-radius:4px;
-                        font-size:14px;
-                        font-weight:bold;
-                        text-align:center;">
+            <div style="
+                background-color:#2e7d32;
+                color:white;
+                padding:8px 16px;
+                border-radius:4px;
+                font-size:14px;
+                font-weight:bold;
+                text-align:center;
+            ">
                 Last refresh {refresh_time}
             </div>
         ''', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    head_c1, head_c2, head_c3 = st.columns([1, 6, 1])
+    head_c1, head_c2, head_c3 = st.columns(
+        [1, 6, 1]
+    )
 
     with head_c1:
         st.image(
@@ -468,14 +690,17 @@ if st.session_state.view == "game":
         )
 
     with head_c2:
+
         st.markdown(f"""
-            <div style="display:flex;
-                        align-items:center;
-                        justify-content:center;
-                        font-weight:800;
-                        font-size:clamp(20px,3vw,32px);
-                        gap:15px;
-                        text-align:center;">
+            <div style="
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                font-weight:800;
+                font-size:clamp(20px,3vw,32px);
+                gap:15px;
+                text-align:center;
+            ">
                 <span>{st.session_state.away}</span>
                 <span style="color:#888;">
                     {st.session_state.away_score}
@@ -504,6 +729,7 @@ if st.session_state.view == "game":
     })
 
     def p_key(l):
+
         if l.startswith('P'):
             return int(l[1:])
 
@@ -515,7 +741,10 @@ if st.session_state.view == "game":
 
         return 200
 
-    all_periods = sorted(raw_periods, key=p_key)
+    all_periods = sorted(
+        raw_periods,
+        key=p_key
+    )
 
     all_dts = [
         p["wall_dt"]
@@ -523,8 +752,15 @@ if st.session_state.view == "game":
         if p["wall_dt"]
     ]
 
-    game_start_default = min(all_dts) if all_dts else None
-    game_end_default = max(all_dts) if all_dts else None
+    game_start_default = (
+        min(all_dts)
+        if all_dts else None
+    )
+
+    game_end_default = (
+        max(all_dts)
+        if all_dts else None
+    )
 
     USE_PERIOD_FILTER = st.checkbox(
         "🏒 Filter by Period",
@@ -536,7 +772,8 @@ if st.session_state.view == "game":
             "Select Periods",
             options=all_periods
         )
-        if USE_PERIOD_FILTER else []
+        if USE_PERIOD_FILTER
+        else []
     )
 
     USE_TIME_FILTER = st.checkbox(
@@ -572,11 +809,14 @@ if st.session_state.view == "game":
             else dtime(23, 59)
         )
 
-        st.markdown("**Start date/time (ET)**")
+        st.markdown(
+            "**Start date/time (ET)**"
+        )
 
         sc1, sc2 = st.columns(2)
 
         with sc1:
+
             start_date_input = st.date_input(
                 "Start date",
                 value=def_start_date,
@@ -584,6 +824,7 @@ if st.session_state.view == "game":
             )
 
         with sc2:
+
             start_time_input = st.time_input(
                 "Start time",
                 value=def_start_time,
@@ -591,11 +832,14 @@ if st.session_state.view == "game":
                 key="tf_start_time"
             )
 
-        st.markdown("**End date/time (ET)**")
+        st.markdown(
+            "**End date/time (ET)**"
+        )
 
         ec1, ec2 = st.columns(2)
 
         with ec1:
+
             end_date_input = st.date_input(
                 "End date",
                 value=def_end_date,
@@ -603,6 +847,7 @@ if st.session_state.view == "game":
             )
 
         with ec2:
+
             end_time_input = st.time_input(
                 "End time",
                 value=def_end_time,
@@ -642,16 +887,29 @@ if st.session_state.view == "game":
 
         def passes(p):
 
-            a_s = p.get("away_skaters")
-            h_s = p.get("home_skaters")
+            a_s = p.get(
+                "away_skaters"
+            )
 
-            a_g = p.get("away_g_in", True)
-            h_g = p.get("home_g_in", True)
+            h_s = p.get(
+                "home_skaters"
+            )
+
+            a_g = p.get(
+                "away_g_in",
+                True
+            )
+
+            h_g = p.get(
+                "home_g_in",
+                True
+            )
 
             if (
                 USE_PERIOD_FILTER
                 and selected_periods
-                and p["period_label"] not in selected_periods
+                and p["period_label"]
+                not in selected_periods
             ):
                 return False
 
@@ -665,7 +923,9 @@ if st.session_state.view == "game":
                     return False
 
                 if not (
-                    START_DT <= p["wall_dt"] <= END_DT
+                    START_DT
+                    <= p["wall_dt"]
+                    <= END_DT
                 ):
                     return False
 
@@ -677,13 +937,19 @@ if st.session_state.view == "game":
 
             if USE_PP_FILTER:
 
-                if a_s is None or h_s is None:
+                if (
+                    a_s is None
+                    or h_s is None
+                ):
                     return False
 
                 if a_s == h_s:
                     return False
 
-            if USE_GP_FILTER and (a_g and h_g):
+            if (
+                USE_GP_FILTER
+                and (a_g and h_g)
+            ):
                 return False
 
             return True
@@ -710,62 +976,19 @@ if st.session_state.view == "game":
     )
 
     total = len(plays)
+
     showing = len(display_list)
 
     if filters_applied:
 
         if showing == 0:
+
             st.warning(
-                "⚠️ No results found — please check the filters applied."
+                "⚠️ No results found — "
+                "please check the filters applied."
             )
+
             st.stop()
-
-        if USE_PERIOD_FILTER:
-            labels = (
-                selected_periods
-                if selected_periods
-                else ["none selected"]
-            )
-
-            st.info(
-                f"🏒 **Period filter:** "
-                f"{', '.join(labels)} "
-                f"— showing **{showing}** of **{total}** plays"
-            )
-
-        if USE_TIME_FILTER:
-            st.info(
-                f"🕐 **Time filter:** "
-                f"{START_DT.strftime('%Y-%m-%d %H:%M')} "
-                f"→ "
-                f"{END_DT.strftime('%Y-%m-%d %H:%M')} ET "
-                f"— showing **{showing}** of **{total}** plays"
-            )
-
-        if USE_GOAL_FILTER:
-
-            n_goals = sum(
-                1 for p in plays
-                if p["type_text"] == "Goal"
-            )
-
-            st.info(
-                f"🚨 **Goals Only filter:** "
-                f"{n_goals} goal(s) in game "
-                f"— showing **{showing}** of **{total}** plays"
-            )
-
-        if USE_PP_FILTER:
-            st.info(
-                f"⚡ **Power Plays Only filter:** "
-                f"showing **{showing}** of **{total}** plays"
-            )
-
-        if USE_GP_FILTER:
-            st.info(
-                f"🥅 **Empty Nets Only filter:** "
-                f"showing **{showing}** of **{total}** plays"
-            )
 
     # =========================
     # RENDER PLAYS
@@ -779,17 +1002,21 @@ if st.session_state.view == "game":
         )
 
         st.subheader(
-            f"{emoji} {p.get('period_label')} "
+            f"{emoji} "
+            f"{p.get('period_label')} "
             f"| ⏱️ {p.get('clock')}"
         )
 
         st.markdown(
             f"📊 **Score:** "
-            f"{p.get('away_score')} - {p.get('home_score')}"
+            f"{p.get('away_score')} "
+            f"- "
+            f"{p.get('home_score')}"
         )
 
         st.markdown(
-            f"🎯 **Event:** {p.get('type_text')}"
+            f"🎯 **Event:** "
+            f"{p.get('type_text')}"
         )
 
         st.markdown(
@@ -798,12 +1025,15 @@ if st.session_state.view == "game":
         )
 
         st.markdown(
-            f"📋 **Play:** {p.get('text')}"
+            f"📋 **Play:** "
+            f"{p.get('text')}"
         )
 
         if p.get("wall_et"):
+
             st.markdown(
-                f"🕐 **Time (ET):** `{p['wall_et']}`"
+                f"🕐 **Time (ET):** "
+                f"`{p['wall_et']}`"
             )
 
         st.divider()
@@ -814,6 +1044,7 @@ if st.session_state.view == "game":
 else:
 
     def handle_date_change():
+
         st.session_state.sched_date = (
             st.session_state.calendar_widget
         )
@@ -829,54 +1060,11 @@ else:
 
     games = fetch_scoreboard(formatted_date)
 
-    st.markdown("""
-        <style>
-            .sched-team-row {
-                display:flex;
-                align-items:center;
-                gap:12px;
-                margin-bottom:6px;
-            }
-
-            .sched-team-name {
-                font-size:22px;
-                font-weight:800;
-                color:#ffffff;
-            }
-
-            .sched-score {
-                font-size:22px;
-                font-weight:800;
-                color:#888888;
-                margin-left:auto;
-            }
-
-            .sched-meta {
-                font-size:13px;
-                color:#999999;
-                border-top:1px solid rgba(255,255,255,0.1);
-                padding-top:8px;
-                margin-top:8px;
-                display:flex;
-                align-items:center;
-            }
-
-            .sched-extra {
-                background:#e67e22;
-                color:#fff;
-                font-size:11px;
-                padding:2px 6px;
-                border-radius:4px;
-                margin-left:8px;
-                font-weight:bold;
-            }
-        </style>
-    """, unsafe_allow_html=True)
-
     if not games:
 
         st.info(
-            f"No games scheduled for {formatted_date}."
+            f"No games scheduled for "
+            f"{formatted_date}."
         )
 
     else:
@@ -887,84 +1075,58 @@ else:
 
             has_started = g["has_score"]
 
-            ot_badge = (
-                '<span class="sched-extra">OT</span>'
-                if g["is_ot"]
-                else ""
-            )
-
-            card_html = f"""
-            <div class="sched-team-row">
-                <img src="{g['away_logo']}" width="34"/>
-                <span class="sched-team-name">
-                    {g['away_abbr']}
-                </span>
-                <span class="sched-score">
-                    {g['away_score'] if has_started else ''}
-                </span>
-            </div>
-
-            <div class="sched-team-row">
-                <img src="{g['home_logo']}" width="34"/>
-                <span class="sched-team-name">
-                    {g['home_abbr']}
-                </span>
-                <span class="sched-score">
-                    {g['home_score'] if has_started else ''}
-                </span>
-            </div>
-
-            <div class="sched-meta">
-                {g['time_str']}
-                &middot;
-                {g['state_name']}
-                {ot_badge}
-            </div>
-            """
-
             with cols[i % 2]:
 
                 with st.container(border=True):
 
-                    st.markdown(
-                        card_html,
-                        unsafe_allow_html=True
-                    )
+                    st.markdown(f"""
+                    ### {g['away_abbr']} @ {g['home_abbr']}
+
+                    {g['time_str']}
+
+                    Score:
+                    {g['away_score']} - {g['home_score']}
+                    """)
 
                     btn_label = (
                         f"▶ Open "
-                        f"{g['away_abbr']} @ {g['home_abbr']}"
+                        f"{g['away_abbr']} "
+                        f"@ "
+                        f"{g['home_abbr']}"
                         if has_started
                         else "⏳ Not Started"
-                    )
-
-                    tooltip = (
-                        ""
-                        if has_started
-                        else "Data will be available once the game starts."
                     )
 
                     if st.button(
                         btn_label,
                         key=f"btn_{g['event_id']}",
                         use_container_width=True,
-                        disabled=not has_started,
-                        help=tooltip
+                        disabled=not has_started
                     ):
 
                         st.session_state.update({
+
                             "view": "game",
+
                             "event_id": g["event_id"],
+
                             "away": g["away_abbr"],
                             "home": g["home_abbr"],
+
                             "away_logo": g["away_logo"],
                             "home_logo": g["home_logo"],
+
                             "away_score": g["away_score"],
                             "home_score": g["home_score"],
+
                             "game_state": g["state"],
+
                             "filters_applied": False,
+
                             "filtered_plays": None,
+
                             "cached_plays": None,
+
                             "cached_event_id": None
                         })
 
