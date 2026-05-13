@@ -137,51 +137,48 @@ def get_parsed_plays(event_id: str) -> list:
     plays = []
     
     for p in raw_plays:
+        # 1. Capture the text first to avoid NameError
+        text = p.get("text", "")
+        
+        # 2. Robust Situation Decoder
         sit = p.get("situation", {})
         sit_code = str(sit.get("situationCode", ""))
         
-        # --- MULTI-STEP EXTRACTION ---
         away_s, home_s = 5, 5
         away_g_in, home_g_in = True, True
 
-        # Priority 1: Use the 4-digit situationCode (most accurate)
         if len(sit_code) == 4:
             away_g_in = (sit_code[0] == '1')
             away_s    = int(sit_code[1])
             home_s    = int(sit_code[2])
             home_g_in = (sit_code[3] == '1')
-        
-        # Priority 2: Use direct skater fields if Priority 1 failed
         elif sit.get("awaySkaters") is not None:
             away_s = sit.get("awaySkaters")
             home_s = sit.get("homeSkaters")
         
-        # Priority 3: Check for penalty text if data is STILL missing
-        # (Fall-back for games where sit data is stripped)
-        play_text = p.get("text", "").lower()
-        if "power play" in play_text or "penalty" in play_text:
-            # We don't know the exact count, so we flag it for the filter
-            # by making them uneven
-            if "home" in play_text: home_s = 4 
+        # Power play text fallback
+        lower_text = text.lower()
+        if (away_s == 5 and home_s == 5) and ("power play" in lower_text or "penalty" in lower_text):
+            if "home" in lower_text: home_s = 4 
             else: away_s = 4
 
-        # Final Formatting
         strength_label = f"{away_s}v{home_s}"
         if not away_g_in or not home_g_in:
             strength_label += " (Empty Net)"
         
+        # 3. Build the dictionary
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
             "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": p.get("type", {}).get("text", ""),
-            "text": text,
+            "text": text, # Variable is now defined above
             "strength": strength_label,
             "away_skaters": away_s,
             "home_skaters": home_s,
             "away_g_in": away_g_in,
             "home_g_in": home_g_in,
-            "wall_et": fmt_et_full(p.get("wallclock", "")), # Ensure this matches your display loop
+            "wall_et": fmt_et_full(p.get("wallclock", "")),
             "wall_dt": to_et(p.get("wallclock", "")),
             "away_score": p.get("awayScore", ""),
             "home_score": p.get("homeScore", ""),
@@ -282,18 +279,16 @@ if st.session_state.view == "game":
             a_s, h_s = p["away_skaters"], p["home_skaters"]
             a_g, h_g = p["away_g_in"], p["home_g_in"]
 
-            # Power Play Check
+            # Power Play: Uneven skaters AND no one has a pulled goalie
             if USE_PP_FILTER:
-                # Catch ANY uneven situation where goalies are still in
                 if a_s == h_s or not a_g or not h_g:
                     return False
             
-            # Goalie Pulled Check
+            # Goalie Pulled: Either goalie is out
             if USE_GP_FILTER:
-                # Catch any play where a goalie is OUT
                 if a_g and h_g:
                     return False
-                    
+            # ... other filters ...
             return True
             
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
