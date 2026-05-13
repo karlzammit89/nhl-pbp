@@ -381,6 +381,9 @@ else:
             has_started = g["has_score"]
             ot_badge = f'<span class="sched-extra">OT</span>' if g["is_ot"] else ""
             
+            meta_text = f"{g['time_str']} &middot; {g['state_name']}"
+            # -----------------------------
+            
             # HTML for the card content
             card_html = f"""
             <div class="sched-team-row">
@@ -394,7 +397,7 @@ else:
                 <span class="sched-score">{g['home_score'] if has_started else ''}</span>
             </div>
             <div class="sched-meta">
-                {g['time_str']} &middot; {g['state_name']}{ot_badge}
+                {meta_text}{ot_badge}
             </div>
             """
             
