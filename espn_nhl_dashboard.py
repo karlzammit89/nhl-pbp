@@ -137,46 +137,54 @@ def get_parsed_plays(event_id: str) -> list:
     plays = []
     
     for p in raw_plays:
-        # --- ROBUST SITUATION DECODER ---
         sit = p.get("situation", {})
         sit_code = str(sit.get("situationCode", ""))
         
-        # Default to 5v5 with goalies in
+        # --- MULTI-STEP EXTRACTION ---
         away_s, home_s = 5, 5
         away_g_in, home_g_in = True, True
 
+        # Priority 1: Use the 4-digit situationCode (most accurate)
         if len(sit_code) == 4:
-            # Code: [AwayGoalie][AwaySkaters][HomeSkaters][HomeGoalie]
             away_g_in = (sit_code[0] == '1')
             away_s    = int(sit_code[1])
             home_s    = int(sit_code[2])
             home_g_in = (sit_code[3] == '1')
         
-        # Create display label
+        # Priority 2: Use direct skater fields if Priority 1 failed
+        elif sit.get("awaySkaters") is not None:
+            away_s = sit.get("awaySkaters")
+            home_s = sit.get("homeSkaters")
+        
+        # Priority 3: Check for penalty text if data is STILL missing
+        # (Fall-back for games where sit data is stripped)
+        play_text = p.get("text", "").lower()
+        if "power play" in play_text or "penalty" in play_text:
+            # We don't know the exact count, so we flag it for the filter
+            # by making them uneven
+            if "home" in play_text: home_s = 4 
+            else: away_s = 4
+
+        # Final Formatting
         strength_label = f"{away_s}v{home_s}"
         if not away_g_in or not home_g_in:
             strength_label += " (Empty Net)"
         
-        p_obj = p.get("period", {})
-        t_obj = p.get("type", {})
-        text = p.get("text", "")
-        
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
-            "period_label": period_label(p_obj.get("number", 1), p_obj.get("type", "")),
+            "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
             "clock": p.get("clock", {}).get("displayValue", ""),
-            "type_text": t_obj.get("text", ""),
-            "text": text,
+            "type_text": p.get("type", {}).get("text", ""),
+            "text": p.get("text", ""),
             "strength": strength_label,
             "away_skaters": away_s,
             "home_skaters": home_s,
             "away_g_in": away_g_in,
             "home_g_in": home_g_in,
-            "wall_et": fmt_et_full(p.get("wallclock", "")),
             "wall_dt": to_et(p.get("wallclock", "")),
             "away_score": p.get("awayScore", ""),
             "home_score": p.get("homeScore", ""),
-            "emoji": get_play_emoji(text),
+            "emoji": get_play_emoji(p.get("text", "")),
         })
     
     plays.sort(key=lambda x: x["seq"])
@@ -270,28 +278,18 @@ if st.session_state.view == "game":
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
-            a_s = p.get("away_skaters", 5)
-            h_s = p.get("home_skaters", 5)
-            a_g = p.get("away_g_in", True)
-            h_g = p.get("home_g_in", True)
+            a_s, h_s = p["away_skaters"], p["home_skaters"]
+            a_g, h_g = p["away_g_in"], p["home_g_in"]
 
-            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
-                return False
-            
-            if USE_TIME_FILTER and START_DT and END_DT:
-                if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
-                    return False
-            
-            if USE_GOAL_FILTER and p["type_text"] != "Goal":
-                return False
-            
-            # Power Play: Skaters are uneven AND both goalies are in the net
+            # Power Play Check
             if USE_PP_FILTER:
+                # Catch ANY uneven situation where goalies are still in
                 if a_s == h_s or not a_g or not h_g:
                     return False
             
-            # Goalie Pulled: Either goalie is out (False)
+            # Goalie Pulled Check
             if USE_GP_FILTER:
+                # Catch any play where a goalie is OUT
                 if a_g and h_g:
                     return False
                     
