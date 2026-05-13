@@ -262,20 +262,33 @@ if st.session_state.view == "game":
 
     # --- Render loop ---
     for p in filtered:
-        st.subheader(f"{p['emoji']} {p['period_label']} | ⏱️ {p['clock']}")
+        # Use the emoji from the dictionary or override for goals
+        emoji = p["emoji"] if not p["is_goal"] else "🚨"
         
+        st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}")
+        
+        # 1. Added Event Type
+        st.markdown(f"🎯 **Event:** {p['type_text']}")
+
+        # 2. Description with Goal highlight
         if p["is_goal"]:
             st.markdown(f"📋 **Play:** {p['text']} &nbsp; 🔥 *Goal!*")
         else:
             st.markdown(f"📋 **Play:** {p['text']}")
             
+        # 3. Score
         st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
         
+        # 4. Situation (Power Play, etc.)
+        if "situation" in p and p["situation"]:
+            st.markdown(f"⚖️ **Situation:** {p['situation']}")
+        
+        # 5. Timestamp
         if p["wall_et"]:
             st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
         
         st.divider()
-
+        
 # ======================================================
 # SCHEDULE VIEW
 # ======================================================
