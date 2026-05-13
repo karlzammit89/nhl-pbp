@@ -263,21 +263,21 @@ if st.session_state.view == "game":
         st.warning("No plays found.")
     else:
         for p in display_list:
-    emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
+            emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
     
-    # Use .get() to avoid KeyErrors and format the badge
-    strength = p.get("strength", "")
-    strength_badge = f" | `{strength}`" if strength else ""
+            # Use .get() to avoid KeyErrors and format the badge
+            strength = p.get("strength", "")
+            strength_badge = f" | `{strength}`" if strength else ""
     
-    st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}{strength_badge}")
+            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}{strength_badge}")
     
-    st.markdown(f"🎯 **Event:** {p['type_text']}")
-    st.markdown(f"📋 **Play:** {p['text']}")
-    st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
+            st.markdown(f"🎯 **Event:** {p['type_text']}")
+            st.markdown(f"📋 **Play:** {p['text']}")
+            st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
     
-    if p["wall_et"]:
-        st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
-    st.divider()
+            if p["wall_et"]:
+                st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+            st.divider()
 
 # ======================================================
 # SCHEDULE VIEW
