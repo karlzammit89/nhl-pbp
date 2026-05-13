@@ -131,32 +131,20 @@ def fetch_scoreboard(date_str: str) -> list:
 def get_parsed_plays(event_id: str) -> list:
     st.session_state.last_refresh = datetime.now(ET)
     
-    # We remove the cache check here temporarily to force a clean update
+    # Force fresh data by ignoring cache for this debug phase
     try:
         resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-        raw_plays = data.get("plays", [])
+        raw_plays = resp.json().get("plays", [])
     except Exception as e:
         st.error(f"API Error: {e}")
         return []
 
     plays = []
     for p in raw_plays:
-        # PURE SITUATION LOGIC
+        # Get raw situation object
         sit = p.get("situation", {})
-        code = str(sit.get("situationCode", ""))
         
-        # Default if code is missing: 1551 (AwayG-AwayS-HomeS-HomeG)
-        a_g, a_s, h_s, h_g = 1, 5, 5, 1 
-
-        if len(code) == 4:
-            a_g = int(code[0])
-            a_s = int(code[1])
-            h_s = int(code[2])
-            h_g = int(code[3])
-        
-        # We store the RAW integers so the UI can decide how to color them
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
             "period_label": period_label(p.get("period", {}).get("number", 1)),
@@ -165,8 +153,7 @@ def get_parsed_plays(event_id: str) -> list:
             "text": p.get("text", ""),
             "away_score": p.get("awayScore", 0),
             "home_score": p.get("homeScore", 0),
-            "a_g": a_g, "a_s": a_s, "h_s": h_s, "h_g": h_g, # Raw states
-            "emoji": get_play_emoji(p.get("text", "")),
+            "sit_code": str(sit.get("situationCode", "")), # Store the raw code
             "wall_et": fmt_et_full(p.get("wallclock", ""))
         })
     
@@ -253,36 +240,51 @@ if st.session_state.view == "game":
     st.info(f"Showing {len(display_list)} of {len(plays)} plays.")
 
     for p in display_list:
-        # RE-CALCULATE STRENGTH FOR UI
-        a_g, a_s, h_s, h_g = p["a_g"], p["a_s"], p["h_s"], p["h_g"]
+        code = p.get("sit_code", "")
         
-        label = f"{a_s}v{h_s}"
-        bg_color = "#34495e" # Default Gray
+        # Default UI State
+        is_special = False
+        alert_msg = ""
+        alert_color = "#34495e" # Dark Blue/Gray
 
-        if a_g == 0:
-            label += " (Away EN)"
-            bg_color = "#e67e22" # Orange
-        elif h_g == 0:
-            label += " (Home EN)"
-            bg_color = "#e67e22" # Orange
-        elif a_s != h_s:
-            label += " (PP)"
-            bg_color = "#2980b9" # Blue
+        # THE DEFINITIVE OVERRIDE
+        # Code: [AwayGoalie][AwaySkaters][HomeSkaters][HomeGoalie]
+        if len(code) == 4:
+            a_g, a_s, h_s, h_g = int(code[0]), int(code[1]), int(code[2]), int(code[3])
+            
+            if a_g == 0:
+                is_special, alert_msg, alert_color = True, f"🚨 VEGAS EMPTY NET ({a_s}v{h_s})", "#d35400"
+            elif h_g == 0:
+                is_special, alert_msg, alert_color = True, f"🚨 ANAHEIM EMPTY NET ({a_s}v{h_s})", "#d35400"
+            elif a_s != h_s:
+                is_special, alert_msg, alert_color = True, f"🏒 POWER PLAY ({a_s}v{h_s})", "#2980b9"
+        
+        # 1. Header with Clock
+        st.subheader(f"{p.get('period_label')} | ⏱️ {p.get('clock')}")
+        
+        # 2. THE NEW ALERT BOX (Replaces the old 5v5 line)
+        if is_special:
+            st.markdown(f"""
+                <div style="background-color:{alert_color}; color:white; padding:10px; border-radius:5px; 
+                text-align:center; font-weight:bold; margin-bottom:10px; border: 2px solid white;">
+                    {alert_msg}
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            # Standard 5v5 display
+            st.markdown("⚖️ **Strength:** `Standard 5v5`")
 
-        emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+        # 3. Play Details
+        col_s1, col_s2 = st.columns([1, 4])
+        with col_s1:
+            st.metric("Score", f"{p['away_score']}-{p['home_score']}")
+        with col_s2:
+            st.markdown(f"**{p['type_text']}**")
+            st.write(p['text'])
         
-        st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
-        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
-        
-        # THE FIX: Render the badge directly
-        badge_html = f'<span style="background:{bg_color}; color:white; padding:2px 10px; border-radius:10px; font-weight:bold;">{label}</span>'
-        st.markdown(f"⚖️ **Strength:** {badge_html}", unsafe_allow_html=True)
-        
-        st.markdown(f"📋 **Play:** {p.get('text')}")
         if p.get("wall_et"):
-            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+            st.caption(f"Time (ET): {p['wall_et']}")
         st.divider()
-
 # ======================================================
 # SCHEDULE VIEW
 # ======================================================
