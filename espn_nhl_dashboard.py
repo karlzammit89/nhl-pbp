@@ -101,7 +101,16 @@ def fetch_scoreboard(date_str: str) -> list:
     for event in data.get("events", []):
         comp = event.get("competitions", [{}])[0]
         status = comp.get("status", {})
-        state = status.get("type", {}).get("state", "pre")
+        state_type = status.get("type", {})
+        state = state_type.get("state", "pre")
+        
+        # --- CLEAN STATUS LOGIC ---
+        raw_name = state_type.get("name", "")
+        if raw_name == "STATUS_SCHEDULED":
+            display_status = "Scheduled"
+        else:
+            display_status = state_type.get("shortDetail", "")
+        
         competitors = comp.get("competitors", [])
         away = next(c for c in competitors if c.get("homeAway") == "away")
         home = next(c for c in competitors if c.get("homeAway") == "home")
@@ -112,7 +121,7 @@ def fetch_scoreboard(date_str: str) -> list:
         games.append({
             "event_id": event.get("id", ""),
             "state": state,
-            "state_name": status.get("type", {}).get("shortDetail", ""),
+            "state_name": display_status, # "Scheduled" instead of the long date
             "is_live": is_live, "is_final": is_final,
             "is_ot": status.get("period", 0) > 3,
             "away_abbr": away.get("team", {}).get("abbreviation", "?"),
@@ -127,6 +136,7 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
+    # This ensures the badge updates every time the data is pulled
     st.session_state.last_refresh = datetime.now(ET)
     
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
