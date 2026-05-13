@@ -301,11 +301,21 @@ if st.session_state.view == "game":
 # SCHEDULE VIEW
 # ======================================================
 else:
-    date = st.date_input("Select date", st.session_state.sched_date)
+      
+    def handle_date_change():
+        st.session_state.sched_date = st.session_state.calendar_widget
+
+    date = st.date_input(
+        "Select date", 
+        value=st.session_state.sched_date,
+        key="calendar_widget",
+        on_change=handle_date_change
+    )
+
     st.session_state.sched_date = date
     games = fetch_scoreboard(date.strftime("%Y-%m-%d"))
-
-    st.markdown("""<style>
+    
+    st.markdown("""<style>...""")
         .sched-team-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
         .sched-team-name { font-size: 22px; font-weight: 800; }
         .sched-score { font-size: 22px; font-weight: 800; color: #aaa; margin-left: auto; }
