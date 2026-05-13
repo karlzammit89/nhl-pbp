@@ -228,14 +228,20 @@ if st.session_state.view == "game":
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
+            # Check Period filter
             if USE_PERIOD_FILTER and selected_periods:
                 if p["period_label"] not in selected_periods:
                     return False
+            
+            # Check Time filter
             if USE_TIME_FILTER and START_DT and END_DT:
                 if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
                     return False
-            if USE_GOAL_FILTER and not p["is_goal"]:
+            
+            # UPDATED: Direct link to Event Type "Goal"
+            if USE_GOAL_FILTER and p["type_text"] != "Goal":
                 return False
+                
             return True
 
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
@@ -262,28 +268,23 @@ if st.session_state.view == "game":
 
     # --- Render loop ---
     for p in filtered:
-        # Use the emoji from the dictionary or override for goals
-        emoji = p["emoji"] if not p["is_goal"] else "🚨"
+        # Determine emoji: Use specific goal emoji if it's a goal
+        emoji = p["emoji"] if p["type_text"] != "Goal" else "🚨"
         
         st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}")
         
-        # 1. Added Event Type
+        # NEW: Display the Event Type
         st.markdown(f"🎯 **Event:** {p['type_text']}")
 
-        # 2. Description with Goal highlight
-        if p["is_goal"]:
-            st.markdown(f"📋 **Play:** {p['text']} &nbsp; 🔥 *Goal!*")
-        else:
-            st.markdown(f"📋 **Play:** {p['text']}")
+        # UPDATED: Description without the 🔥 Goal! text
+        st.markdown(f"📋 **Play:** {p['text']}")
             
-        # 3. Score
+        # Score and metadata
         st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
         
-        # 4. Situation (Power Play, etc.)
         if "situation" in p and p["situation"]:
             st.markdown(f"⚖️ **Situation:** {p['situation']}")
         
-        # 5. Timestamp
         if p["wall_et"]:
             st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
         
