@@ -207,7 +207,6 @@ if st.session_state.view == "game":
             st.session_state.cached_plays = None
             st.rerun()
     with nav_col3:
-        # Last refresh is now guaranteed to have a value from session_state init
         refresh_time = st.session_state.last_refresh.strftime("%H:%M:%S ET")
         st.markdown(f'''
             <div style="background-color:#2e7d32;color:white;padding:8px 16px;border-radius:4px;font-size:14px;font-weight:bold;text-align:center;">
@@ -297,9 +296,35 @@ if st.session_state.view == "game":
         st.session_state.filters_applied = True
         st.rerun()
         
-    display_list = st.session_state.filtered_plays if st.session_state.get("filters_applied") else plays
-    st.info(f"Showing {len(display_list)} of {len(plays)} plays.")
+    # --- INFO BANNERS (Replicated Format) ---
+    filters_applied = st.session_state.get("filters_applied")
+    display_list = st.session_state.filtered_plays if filters_applied else plays
+    total = len(plays)
+    showing = len(display_list)
 
+    if filters_applied:
+        if showing == 0:
+            st.warning("⚠️ No results found — please check the filters applied.")
+            st.stop()
+
+        if USE_PERIOD_FILTER:
+            labels = selected_periods if selected_periods else ["none selected"]
+            st.info(f"🏒 **Period filter:** {', '.join(labels)} — showing **{showing}** of **{total}** plays")
+
+        if USE_TIME_FILTER:
+            st.info(f"🕐 **Time filter:** {START_DT.strftime('%Y-%m-%d %H:%M')} → {END_DT.strftime('%Y-%m-%d %H:%M')} ET — showing **{showing}** of **{total}** plays")
+
+        if USE_GOAL_FILTER:
+            n_goals = sum(1 for p in plays if p["type_text"] == "Goal")
+            st.info(f"🚨 **Goals Only filter:** {n_goals} goal(s) in game — showing **{showing}** of **{total}** plays")
+
+        if USE_PP_FILTER:
+            st.info(f"🏒 **Power Plays filter:** showing **{showing}** of **{total}** plays")
+
+        if USE_GP_FILTER:
+            st.info(f"🥅 **Goalie Pulled filter:** showing **{showing}** of **{total}** plays")
+
+    # Render plays
     for p in display_list:
         emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
         st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
