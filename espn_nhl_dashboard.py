@@ -129,39 +129,65 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
+    # Update timestamp whenever data is fetched
     st.session_state.last_refresh = datetime.now(ET)
     
-    # Force fresh data by ignoring cache for this debug phase
-    try:
-        resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
-        resp.raise_for_status()
-        raw_plays = resp.json().get("plays", [])
-    except Exception as e:
-        st.error(f"API Error: {e}")
-        return []
-
+    if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
+        return st.session_state.cached_plays
+    
+    resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
+    raw_plays = resp.json().get("plays", [])
     plays = []
+    
     for p in raw_plays:
-        # Get raw situation object
+        text = p.get("text", "")
         sit = p.get("situation", {})
+        sit_code = str(sit.get("situationCode", ""))
+        
+        away_s, home_s = 5, 5
+        away_g_in, home_g_in = True, True
+
+        if len(sit_code) == 4:
+            away_g_in = (sit_code[0] == '1')
+            away_s    = int(sit_code[1])
+            home_s    = int(sit_code[2])
+            home_g_in = (sit_code[3] == '1')
+        elif sit.get("awaySkaters") is not None:
+            away_s = sit.get("awaySkaters")
+            home_s = sit.get("homeSkaters")
+        
+        lower_text = text.lower()
+        if (away_s == 5 and home_s == 5) and ("power play" in lower_text or "penalty" in lower_text):
+            if "home" in lower_text: home_s = 4 
+            else: away_s = 4
+
+        strength_label = f"{away_s}v{home_s}"
+        if not away_g_in or not home_g_in:
+            strength_label += " (Empty Net)"
         
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
-            "period_label": period_label(p.get("period", {}).get("number", 1)),
+            "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": p.get("type", {}).get("text", ""),
-            "text": p.get("text", ""),
-            "away_score": p.get("awayScore", 0),
-            "home_score": p.get("homeScore", 0),
-            "sit_code": str(sit.get("situationCode", "")), # Store the raw code
-            "wall_et": fmt_et_full(p.get("wallclock", ""))
+            "text": text,
+            "strength": strength_label,
+            "away_skaters": away_s,
+            "home_skaters": home_s,
+            "away_g_in": away_g_in,
+            "home_g_in": home_g_in,
+            "wall_et": fmt_et_full(p.get("wallclock", "")),
+            "wall_dt": to_et(p.get("wallclock", "")),
+            "away_score": p.get("awayScore", ""),
+            "home_score": p.get("homeScore", ""),
+            "emoji": get_play_emoji(text),
         })
     
     plays.sort(key=lambda x: x["seq"])
     st.session_state.cached_plays = plays
     st.session_state.cached_event_id = event_id
     return plays
-    
+
 # ======================================================
 # GAME FEED VIEW
 # ======================================================
@@ -240,51 +266,16 @@ if st.session_state.view == "game":
     st.info(f"Showing {len(display_list)} of {len(plays)} plays.")
 
     for p in display_list:
-        code = p.get("sit_code", "")
-        
-        # Default UI State
-        is_special = False
-        alert_msg = ""
-        alert_color = "#34495e" # Dark Blue/Gray
-
-        # THE DEFINITIVE OVERRIDE
-        # Code: [AwayGoalie][AwaySkaters][HomeSkaters][HomeGoalie]
-        if len(code) == 4:
-            a_g, a_s, h_s, h_g = int(code[0]), int(code[1]), int(code[2]), int(code[3])
-            
-            if a_g == 0:
-                is_special, alert_msg, alert_color = True, f"🚨 VEGAS EMPTY NET ({a_s}v{h_s})", "#d35400"
-            elif h_g == 0:
-                is_special, alert_msg, alert_color = True, f"🚨 ANAHEIM EMPTY NET ({a_s}v{h_s})", "#d35400"
-            elif a_s != h_s:
-                is_special, alert_msg, alert_color = True, f"🏒 POWER PLAY ({a_s}v{h_s})", "#2980b9"
-        
-        # 1. Header with Clock
-        st.subheader(f"{p.get('period_label')} | ⏱️ {p.get('clock')}")
-        
-        # 2. THE NEW ALERT BOX (Replaces the old 5v5 line)
-        if is_special:
-            st.markdown(f"""
-                <div style="background-color:{alert_color}; color:white; padding:10px; border-radius:5px; 
-                text-align:center; font-weight:bold; margin-bottom:10px; border: 2px solid white;">
-                    {alert_msg}
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            # Standard 5v5 display
-            st.markdown("⚖️ **Strength:** `Standard 5v5`")
-
-        # 3. Play Details
-        col_s1, col_s2 = st.columns([1, 4])
-        with col_s1:
-            st.metric("Score", f"{p['away_score']}-{p['home_score']}")
-        with col_s2:
-            st.markdown(f"**{p['type_text']}**")
-            st.write(p['text'])
-        
+        emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+        st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
+        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+        st.markdown(f"🎯 **Event:** {p.get('type_text')}")
+        st.markdown(f"⚖️ **Strength:** `{p.get('strength', '5v5')}`")
+        st.markdown(f"📋 **Play:** {p.get('text')}")
         if p.get("wall_et"):
-            st.caption(f"Time (ET): {p['wall_et']}")
+            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
         st.divider()
+
 # ======================================================
 # SCHEDULE VIEW
 # ======================================================
