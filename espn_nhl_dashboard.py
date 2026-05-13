@@ -275,9 +275,9 @@ if st.session_state.view == "game":
         START_DT = datetime.combine(start_date_input, start_time_input).replace(tzinfo=ET)
         END_DT   = datetime.combine(end_date_input,   end_time_input).replace(tzinfo=ET)
 
-    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
-    USE_PP_FILTER = st.checkbox("🏒 Power Plays", value=False)
-    USE_GP_FILTER = st.checkbox("🥅 Goalie Pulled", value=False)
+    USE_GOAL_FILTER = st.checkbox("🚨 Filter by Goals, value=False)
+    USE_PP_FILTER = st.checkbox("⚡ Filter by Power Plays", value=False)
+    USE_GP_FILTER = st.checkbox("🥅 Filter by Empty Net", value=False)
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
@@ -316,13 +316,13 @@ if st.session_state.view == "game":
 
         if USE_GOAL_FILTER:
             n_goals = sum(1 for p in plays if p["type_text"] == "Goal")
-            st.info(f"🚨 **Goals Only filter:** {n_goals} goal(s) in game — showing **{showing}** of **{total}** plays")
+            st.info(f"🚨 **Goals filter:** {n_goals} goal(s) in game — showing **{showing}** of **{total}** plays")
 
         if USE_PP_FILTER:
-            st.info(f"🏒 **Power Plays filter:** showing **{showing}** of **{total}** plays")
+            st.info(f"⚡ **Power Plays filter:** showing **{showing}** of **{total}** plays")
 
         if USE_GP_FILTER:
-            st.info(f"🥅 **Goalie Pulled filter:** showing **{showing}** of **{total}** plays")
+            st.info(f"🥅 **Empty Net filter:** showing **{showing}** of **{total}** plays")
 
     # Render plays
     for p in display_list:
