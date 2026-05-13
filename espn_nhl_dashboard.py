@@ -127,6 +127,8 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
+    st.session_state.last_refresh = datetime.now(ET)
+    
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
         return st.session_state.cached_plays
     
@@ -183,7 +185,7 @@ if st.session_state.view == "game":
                     Last refresh {st.session_state.last_refresh.strftime("%H:%M:%S ET")}
                 </div>
             ''', unsafe_allow_html=True)
-
+            
     # 2. Fetch Data
     plays = get_parsed_plays(st.session_state.event_id)
     
@@ -408,5 +410,6 @@ else:
                             "filtered_plays": None,
                             "cached_plays": None,
                             "cached_event_id": None
+                            "last_refresh": datetime.now(ET)
                         })
                         st.rerun()
