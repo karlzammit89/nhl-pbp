@@ -129,7 +129,6 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
-    # Update timestamp whenever data is fetched
     st.session_state.last_refresh = datetime.now(ET)
     
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
@@ -142,29 +141,45 @@ def get_parsed_plays(event_id: str) -> list:
     for p in raw_plays:
         text = p.get("text", "")
         sit = p.get("situation", {})
+        # situationCode: [AwayGoalie][AwaySkaters][HomeSkaters][HomeGoalie]
         sit_code = str(sit.get("situationCode", ""))
         
+        # Default state
         away_s, home_s = 5, 5
         away_g_in, home_g_in = True, True
 
+        # 1. Primary: Extract from 4-digit Code (e.g., "1541")
         if len(sit_code) == 4:
             away_g_in = (sit_code[0] == '1')
             away_s    = int(sit_code[1])
             home_s    = int(sit_code[2])
             home_g_in = (sit_code[3] == '1')
+        
+        # 2. Secondary: Fallback to individual skater counts
         elif sit.get("awaySkaters") is not None:
             away_s = sit.get("awaySkaters")
             home_s = sit.get("homeSkaters")
-        
-        lower_text = text.lower()
-        if (away_s == 5 and home_s == 5) and ("power play" in lower_text or "penalty" in lower_text):
-            if "home" in lower_text: home_s = 4 
-            else: away_s = 4
 
+        # 3. Text-Based refinement (Catching labels the API code misses)
+        lower_text = text.lower()
+        is_pp_text = "power play" in lower_text or "ppg" in lower_text
+        is_en_text = "empty net" in lower_text
+
+        # Construct Human-Readable Strength Label
+        # e.g., "5v4 (PP)", "6v5 (Away EN)", "3v3"
         strength_label = f"{away_s}v{home_s}"
-        if not away_g_in or not home_g_in:
-            strength_label += " (Empty Net)"
         
+        if not away_g_in:
+            strength_label += " (Away EN)"
+        elif not home_g_in:
+            strength_label += " (Home EN)"
+        elif is_en_text and "EN" not in strength_label:
+            strength_label += " (EN)"
+            
+        if (away_s != home_s or is_pp_text) and "EN" not in strength_label:
+            # Only tag PP if it's not already an Empty Net situation
+            strength_label += " (PP)"
+
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
             "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
@@ -177,9 +192,8 @@ def get_parsed_plays(event_id: str) -> list:
             "away_g_in": away_g_in,
             "home_g_in": home_g_in,
             "wall_et": fmt_et_full(p.get("wallclock", "")),
-            "wall_dt": to_et(p.get("wallclock", "")),
-            "away_score": p.get("awayScore", ""),
-            "home_score": p.get("homeScore", ""),
+            "away_score": p.get("awayScore", 0),
+            "home_score": p.get("homeScore", 0),
             "emoji": get_play_emoji(text),
         })
     
@@ -187,7 +201,6 @@ def get_parsed_plays(event_id: str) -> list:
     st.session_state.cached_plays = plays
     st.session_state.cached_event_id = event_id
     return plays
-
 # ======================================================
 # GAME FEED VIEW
 # ======================================================
