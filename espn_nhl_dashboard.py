@@ -299,7 +299,7 @@ if st.session_state.view == "game":
         st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
         st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
         st.markdown(f"🎯 **Event:** {p.get('type_text')}")
-        st.markdown(f"⚖️ **Strength:** `{p.get('strength', '5v5')}`")
+        st.markdown(f"⚖️ **Strength:** {p.get('strength_html')}", unsafe_allow_html=True)
         st.markdown(f"📋 **Play:** {p.get('text')}")
         if p.get("wall_et"):
             st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
