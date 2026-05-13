@@ -258,25 +258,33 @@ if st.session_state.view == "game":
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
+            # Get numeric skater counts (defaulting to 5 if data is missing)
             a_s = p.get("away_skaters", 5)
             h_s = p.get("home_skaters", 5)
 
+            # 1. Period Filter
             if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
                 return False
             
+            # 2. Actual Time Filter
             if USE_TIME_FILTER and START_DT and END_DT:
                 if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
                     return False
             
+            # 3. Goal Filter
             if USE_GOAL_FILTER and p["type_text"] != "Goal":
                 return False
             
-            # Updated Power Play: Skaters are uneven AND no one has 6 (pulled goalie)
+            # 4. Power Play Filter (New Logic)
+            # A Power Play is whenever skaters are uneven AND neither team has 6 (pulled goalie)
             if USE_PP_FILTER:
-                if a_s == h_s or a_s == 6 or h_s == 6:
+                is_uneven = (a_s != h_s)
+                has_goalie_pulled = (a_s == 6 or h_s == 6)
+                if not is_uneven or has_goalie_pulled:
                     return False
             
-            # Updated Goalie Pulled: Either team has 6 skaters
+            # 5. Goalie Pulled Filter (New Logic)
+            # Returns any play where either team has 6 skaters on the ice
             if USE_GP_FILTER:
                 if a_s != 6 and h_s != 6:
                     return False
@@ -285,7 +293,6 @@ if st.session_state.view == "game":
             
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
-
     # 5. Display Feed
     display_list = st.session_state.filtered_plays if st.session_state.filters_applied else plays
     if st.session_state.filters_applied:
