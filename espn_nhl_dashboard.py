@@ -308,36 +308,64 @@ if st.session_state.view == "game":
 # SCHEDULE VIEW
 # ======================================================
 else:
+    # Function to sync the calendar widget with session state
     def handle_date_change():
         st.session_state.sched_date = st.session_state.calendar_widget
 
-    # date_input defaults to YYYY-MM-DD in most browser locales
-    date = st.date_input("Select date", value=st.session_state.sched_date, key="calendar_widget", on_change=handle_date_change)
-    
-    # Ensuring the date string for the API and display is YYYY-MM-DD
+    # 1. Date Input (using the date from session state)
+    # The display format (dashes vs slashes) is controlled by the JS at the top of your script
+    date = st.date_input(
+        "Select date", 
+        value=st.session_state.sched_date, 
+        key="calendar_widget", 
+        on_change=handle_date_change
+    )
+
+    # 2. Format date string to ensure YYYY-MM-DD for API and UI text
     formatted_date = date.strftime("%Y-%m-%d")
+    
+    # 3. Fetch data (Crucial: Define 'games' before checking 'if not games')
+    games = fetch_scoreboard(formatted_date)
 
-if not games:
-    st.info(f"No games scheduled for {formatted_date}.")
-
+    # 4. Inject Custom CSS for Schedule Cards
     st.markdown("""
         <style>
             .sched-team-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
             .sched-team-name { font-size: 22px; font-weight: 800; color: #ffffff; }
             .sched-score { font-size: 22px; font-weight: 800; color: #888888; margin-left: auto; }
-            .sched-meta { font-size: 13px; color: #999999; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px; margin-top: 8px; display: flex; align-items: center; }
-            .sched-extra { background: #e67e22; color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-weight: bold; }
+            .sched-meta { 
+                font-size: 13px; 
+                color: #999999; 
+                border-top: 1px solid rgba(255,255,255,0.1); 
+                padding-top: 8px; 
+                margin-top: 8px; 
+                display: flex; 
+                align-items: center; 
+            }
+            .sched-extra { 
+                background: #e67e22; 
+                color: #fff; 
+                font-size: 11px; 
+                padding: 2px 6px; 
+                border-radius: 4px; 
+                margin-left: 8px; 
+                font-weight: bold; 
+            }
         </style>
     """, unsafe_allow_html=True)
 
+    # 5. Render Logic
     if not games:
         st.info(f"No games scheduled for {formatted_date}.")
     else:
+        # Create a 2-column grid for the game cards
         cols = st.columns(2)
+        
         for i, g in enumerate(games):
             has_started = g["has_score"]
             ot_badge = f'<span class="sched-extra">OT</span>' if g["is_ot"] else ""
             
+            # HTML for the team names, logos, and scores
             card_html = f"""
             <div class="sched-team-row">
                 <img src="{g['away_logo']}" width="34"/>
@@ -356,27 +384,37 @@ if not games:
                 with st.container(border=True):
                     st.markdown(card_html, unsafe_allow_html=True)
                     
-                    # Logic for Button Label and Tooltip (help)
+                    # Logic for Button Label and Tooltip
                     if has_started:
                         btn_label = f"▶ Open {g['away_abbr']} @ {g['home_abbr']}"
-                        tooltip_text = None # No tooltip needed if active
+                        tooltip_text = "" # No tooltip needed when game is active
                     else:
                         btn_label = "⏳ Not Started"
                         tooltip_text = "Data will be available once the game starts."
                     
+                    # Button with hover tooltip and disabled state
                     if st.button(
                         btn_label, 
                         key=f"btn_{g['event_id']}", 
                         use_container_width=True, 
                         disabled=not has_started,
-                        help=tooltip_text  # This creates the hover effect
+                        help=tooltip_text
                     ):
+                        # Update session state to navigate to the Game View
                         st.session_state.update({
-                            "view": "game", "event_id": g["event_id"],
-                            "away": g["away_abbr"], "home": g["home_abbr"],
-                            "away_logo": g["away_logo"], "home_logo": g["home_logo"],
-                            "away_score": g["away_score"], "home_score": g["home_score"],
-                            "game_state": g["state"], "filters_applied": False,
-                            "filtered_plays": None, "cached_plays": None, "cached_event_id": None
+                            "view": "game", 
+                            "event_id": g["event_id"],
+                            "away": g["away_abbr"], 
+                            "home": g["home_abbr"],
+                            "away_logo": g["away_logo"], 
+                            "home_logo": g["home_logo"],
+                            "away_score": g["away_score"], 
+                            "home_score": g["home_score"],
+                            "game_state": g["state"], 
+                            "filters_applied": False,
+                            "filtered_plays": None, 
+                            "cached_plays": None, 
+                            "cached_event_id": None
                         })
                         st.rerun()
+            
