@@ -239,14 +239,24 @@ if st.session_state.view == "game":
         st.markdown("**Start date/time (ET)**")
         sc1, sc2 = st.columns(2)
         with sc1:
-            start_date = st.date_input("Start date", value=game_start_dt.date(), key="sd")
+            start_date = st.date_input(
+                "Start date", 
+                value=game_start_dt.date(), 
+                key="sd",
+                format="YYYY-MM-DD" # <--- ADD THIS
+            )
         with sc2:
             start_time = st.time_input("Start time", value=game_start_dt.time(), key="st", step=60)
 
         st.markdown("**End date/time (ET)**")
         ec1, ec2 = st.columns(2)
         with ec1:
-            end_date = st.date_input("End date", value=game_end_dt.date(), key="ed")
+            end_date = st.date_input(
+                "End date", 
+                value=game_end_dt.date(), 
+                key="ed",
+                format="YYYY-MM-DD" # <--- ADD THIS
+            )
         with ec2:
             end_time = st.time_input("End time", value=game_end_dt.time(), key="et", step=60)
         
@@ -313,7 +323,8 @@ else:
         "Select date", 
         value=st.session_state.sched_date,
         key="calendar_widget",
-        on_change=handle_date_change
+        on_change=handle_date_change,
+        format="YYYY-MM-DD"
     )
 
     # 2. Update state and fetch games
