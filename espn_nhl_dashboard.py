@@ -223,10 +223,11 @@ if st.session_state.view == "game":
 
     # Individual Checkboxes
     USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
+    selected_periods = [] # Initialize as empty
     if USE_PERIOD_FILTER:
         selected_periods = st.multiselect("Select Periods", options=all_periods)
 
-    USE_TIME_FILTER   = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
+    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
     START_DT = END_DT = None
     if USE_TIME_FILTER:
         all_wall_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
@@ -252,16 +253,26 @@ if st.session_state.view == "game":
 
     USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
 
-    # Apply Button
+    # --- THE FIX IS HERE ---
     if st.button("🚀 Apply Filters"):
         def passes(p):
-            if USE_PERIOD_FILTER and 'selected_periods' in locals() and selected_periods:
-                if p["period_label"] not in selected_periods: return False
+            # 1. Fixed Period Logic: Check if selection exists
+            if USE_PERIOD_FILTER and selected_periods:
+                if p["period_label"] not in selected_periods:
+                    return False
+            
+            # 2. Time Logic
             if USE_TIME_FILTER and START_DT and END_DT:
-                if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT): return False
-            if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
+                if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
+                    return False
+            
+            # 3. Goal Logic
+            if USE_GOAL_FILTER and p["type_text"] != "Goal":
+                return False
+                
             return True
 
+        # Re-run filter on every click
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
 
