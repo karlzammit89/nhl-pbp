@@ -139,11 +139,11 @@ def get_parsed_plays(event_id: str) -> list:
     for p in raw_plays:
         # --- NEW STRENGTH LOGIC ---
         sit = p.get("situation", {})
-        away_skaters = sit.get("awaySkaters")
-        home_skaters = sit.get("homeSkaters")
-        
-        # Build the 5v4 string if data is available
-        strength_label = f"{away_skaters}v{home_skaters}" if away_skaters and home_skaters else ""
+        away_s = sit.get("awaySkaters")
+        home_s = sit.get("homeSkaters")
+
+        # Only generate a label if both skater counts are present
+        strength_label = f"{away_s}v{home_s}" if away_s is not None and home_s is not None else ""
         # --------------------------
 
         p_obj = p.get("period", {})
