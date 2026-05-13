@@ -274,7 +274,7 @@ if st.session_state.view == "game":
     USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
     # UPDATED FILTERS BELOW
     USE_PP_FILTER = st.checkbox("⚡ Power Plays Only", value=False)
-    USE_GP_FILTER = st.checkbox("🥅 Empty Net Only", value=False)
+    USE_GP_FILTER = st.checkbox("🥅 Empty Nets Only", value=False)
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
@@ -319,7 +319,7 @@ if st.session_state.view == "game":
             st.info(f"⚡ **Power Plays Only filter:** showing **{showing}** of **{total}** plays")
 
         if USE_GP_FILTER:
-            st.info(f"🥅 **Empty Net Only filter:** showing **{showing}** of **{total}** plays")
+            st.info(f"🥅 **Empty Nets Only filter:** showing **{showing}** of **{total}** plays")
 
     # Render plays
     for p in display_list:
