@@ -130,9 +130,8 @@ def fetch_scoreboard(date_str: str) -> list:
 
 def get_parsed_plays(event_id: str) -> list:
     """
-    Fetches and parses play-by-play data from ESPN with smart detection
-    for Power Plays (PP) and Empty Net (EN) situations based on the 
-    4-digit situationCode: [AwayGoalie][AwaySkaters][HomeSkaters][HomeGolie]
+    Fetches and parses play-by-play data with a focus on color-coded 
+    strength badges derived from the 4-digit situationCode.
     """
     # Update timestamp whenever data is fetched
     st.session_state.last_refresh = datetime.now(ET)
@@ -144,7 +143,8 @@ def get_parsed_plays(event_id: str) -> list:
     try:
         resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
         resp.raise_for_status()
-        raw_plays = resp.json().get("plays", [])
+        data = resp.json()
+        raw_plays = data.get("plays", [])
     except Exception as e:
         st.error(f"Error fetching game data: {e}")
         return []
@@ -153,7 +153,7 @@ def get_parsed_plays(event_id: str) -> list:
     for p in raw_plays:
         text = p.get("text", "")
         sit = p.get("situation", {})
-        # The 4-digit code is the most reliable way to detect goalie status and skaters
+        # [AwayGoalie][AwaySkaters][HomeSkaters][HomeGoalie]
         sit_code = str(sit.get("situationCode", ""))
         
         # Default starting state
@@ -161,32 +161,49 @@ def get_parsed_plays(event_id: str) -> list:
         away_g_in, home_g_in = True, True
 
         # 1. PRIMARY LOGIC: Parse the 4-digit situationCode
-        # Digits: 0=Away Goalie, 1=Away Skaters, 2=Home Skaters, 3=Home Goalie
         if len(sit_code) == 4:
             away_g_in = (sit_code[0] == '1')
             away_s    = int(sit_code[1])
             home_s    = int(sit_code[2])
             home_g_in = (sit_code[3] == '1')
-        
-        # 2. SECONDARY LOGIC: Fallback to individual fields if Code is missing
         elif sit.get("awaySkaters") is not None:
             away_s = sit.get("awaySkaters")
             home_s = sit.get("homeSkaters")
 
-        # 3. CONSTRUCT STRENGTH LABEL
-        # This fixes the issue where 0651 showed as 5v5 in image_e97e81.png
+        # 2. DEFINE STRENGTH LABEL & COLORING
+        # Default: Even Strength (Gray)
+        bg_color = "#34495e" 
         strength_label = f"{away_s}v{home_s}"
         
+        # Keyword checks for extra safety
         lower_text = text.lower()
         is_pp_keyword = "power play" in lower_text or "ppg" in lower_text
-        
-        if not away_g_in:
-            strength_label += " (Away EN)"
-        elif not home_g_in:
-            strength_label += " (Home EN)"
-        # If skaters are uneven OR it's a known PPG but goalie is in, mark as PP
+        is_en_keyword = "empty net" in lower_text
+
+        if not away_g_in or not home_g_in or is_en_keyword:
+            bg_color = "#e67e22" # Orange for Empty Net
+            if not away_g_in: strength_label += " (Away EN)"
+            elif not home_g_in: strength_label += " (Home EN)"
+            else: strength_label += " (EN)"
         elif away_s != home_s or is_pp_keyword:
+            bg_color = "#2980b9" # Blue for Power Play
             strength_label += " (PP)"
+
+        # Generate HTML Badge for the UI
+        strength_html = f"""
+            <span style="
+                background-color: {bg_color};
+                color: white;
+                padding: 2px 10px;
+                border-radius: 10px;
+                font-size: 0.85rem;
+                font-weight: 600;
+                display: inline-block;
+                border: 1px solid rgba(255,255,255,0.1);
+            ">
+                {strength_label}
+            </span>
+        """
 
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
@@ -197,7 +214,8 @@ def get_parsed_plays(event_id: str) -> list:
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": p.get("type", {}).get("text", ""),
             "text": text,
-            "strength": strength_label,
+            "strength": strength_label,      # For filtering
+            "strength_html": strength_html,  # For display
             "away_skaters": away_s,
             "home_skaters": home_s,
             "away_g_in": away_g_in,
@@ -208,13 +226,9 @@ def get_parsed_plays(event_id: str) -> list:
             "emoji": get_play_emoji(text),
         })
     
-    # Sort by sequence to ensure chronological feed
     plays.sort(key=lambda x: x["seq"])
-    
-    # Cache results
     st.session_state.cached_plays = plays
     st.session_state.cached_event_id = event_id
-    
     return plays
     
 # ======================================================
