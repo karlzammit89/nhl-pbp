@@ -138,11 +138,18 @@ def get_parsed_plays(event_id: str) -> list:
     for p in raw_plays:
         # --- EXTRACT SKATER COUNTS ---
         sit = p.get("situation", {})
-        away_s = sit.get("awaySkaters")
-        home_s = sit.get("homeSkaters")
-        
-        # Create display label (e.g., "5v4")
-        strength_label = f"{away_s}v{home_s}" if away_s is not None and home_s is not None else ""
+        # Use .get() and fallback to 5 to avoid NoneType errors
+        away_s = sit.get("awaySkaters", 5)
+        home_s = sit.get("homeSkaters", 5)
+
+        # If the API uses 'onIce' lists instead, we count the players
+        if not away_s and "awayTeam" in sit:
+            away_s = len(sit["awayTeam"].get("onIce", []))
+        if not home_s and "homeTeam" in sit:
+            home_s = len(sit["homeTeam"].get("onIce", []))
+
+# Create the display label
+strength_label = f"{away_s}v{home_s}"
         
         p_obj = p.get("period", {})
         t_obj = p.get("type", {})
@@ -269,17 +276,18 @@ if st.session_state.view == "game":
             
             # 4. Power Play Filter
             if USE_PP_FILTER:
-                skaters = {p.get("away_skaters"), p.get("home_skaters")}
-                # Checks for any man-advantage situation
-                if skaters not in [{5, 4}, {4, 3}, {5, 3}]:
+            # A Power Play is any situation where skaters are not equal 
+            # (e.g., 5v4, 4v3, 5v3) and neither team has 6 (which usually means a pulled goalie)
+                if away_s == home_s or away_s == 6 or home_s == 6:
                     return False
-            
-            # 5. Goalie Pulled Filter
+
+        # Updated Goalie Pulled Check
             if USE_GP_FILTER:
-                if p.get("away_skaters") != 6 and p.get("home_skaters") != 6:
-                    return False
+            # Usually, a pulled goalie results in 6 skaters for one team
+                if away_s != 6 and home_s != 6:
+                return False
                     
-            return True
+                return True
             
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
