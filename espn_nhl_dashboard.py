@@ -307,17 +307,17 @@ if st.session_state.view == "game":
         st.warning("No plays found for the selected filters.")
     else:
         for p in display_list:
-        emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+            emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
         
-        st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
+            st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
         
-        st.markdown(f"🎯 **Event:** {p.get('type_text')}")
+            st.markdown(f"🎯 **Event:** {p.get('type_text')}")
         
-        strength = p.get("strength") or "5v5"
-        st.markdown(f"⚖️ **Strength:** `{strength}`")
+            strength = p.get("strength") or "5v5"
+            st.markdown(f"⚖️ **Strength:** `{strength}`")
         
-        st.markdown(f"📋 **Play:** {p.get('text')}")
-        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+            st.markdown(f"📋 **Play:** {p.get('text')}")
+            st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
         
         # Use .get() here to prevent the KeyError you saw
         wall_time = p.get("wall_et")
