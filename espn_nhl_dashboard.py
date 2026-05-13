@@ -27,11 +27,6 @@ ET = ZoneInfo("America/New_York")
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard"
 ESPN_SUMMARY    = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/summary"
 
-SITUATION_MAP = {
-    "even": "5v5", "power-play": "PP", "shorthanded": "SH",
-    "penalty-shot": "Penalty Shot", "empty-net": "EN",
-}
-
 PLAY_EMOJI = {
     "goal": "🚨", "penalty": "🟡", "shot-on-goal": "🎯",
     "blocked-shot": "🛡️", "missed-shot": "🤦", "faceoff": "🏒",
@@ -104,12 +99,8 @@ def fetch_scoreboard(date_str: str) -> list:
         state_type = status.get("type", {})
         state = state_type.get("state", "pre")
         
-        # --- CLEAN STATUS LOGIC ---
         raw_name = state_type.get("name", "")
-        if raw_name == "STATUS_SCHEDULED":
-            display_status = "Scheduled"
-        else:
-            display_status = state_type.get("shortDetail", "")
+        display_status = "Scheduled" if raw_name == "STATUS_SCHEDULED" else state_type.get("shortDetail", "")
         
         competitors = comp.get("competitors", [])
         away = next(c for c in competitors if c.get("homeAway") == "away")
@@ -121,7 +112,7 @@ def fetch_scoreboard(date_str: str) -> list:
         games.append({
             "event_id": event.get("id", ""),
             "state": state,
-            "state_name": display_status, # "Scheduled" instead of the long date
+            "state_name": display_status,
             "is_live": is_live, "is_final": is_final,
             "is_ot": status.get("period", 0) > 3,
             "away_abbr": away.get("team", {}).get("abbreviation", "?"),
@@ -136,7 +127,6 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
-    # This ensures the badge updates every time the data is pulled
     st.session_state.last_refresh = datetime.now(ET)
     
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
@@ -146,24 +136,27 @@ def get_parsed_plays(event_id: str) -> list:
     raw_plays = resp.json().get("plays", [])
     plays = []
     for p in raw_plays:
+        # --- PLAYER STRENGTH LOGIC ---
+        sit = p.get("situation", {})
+        away_s = sit.get("awaySkaters")
+        home_s = sit.get("homeSkaters")
+        strength = f"{away_s}v{home_s}" if away_s is not None and home_s is not None else ""
+        
         p_obj = p.get("period", {})
-        pnum = p_obj.get("number", 1)
-        ptype = p_obj.get("type", "")
         t_obj = p.get("type", {})
         text = p.get("text", "")
         
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
-            "period_label": period_label(pnum, ptype),
+            "period_label": period_label(p_obj.get("number", 1), p_obj.get("type", "")),
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": t_obj.get("text", ""),
             "text": text,
+            "strength": strength,
             "wall_et": fmt_et_full(p.get("wallclock", "")),
             "wall_dt": to_et(p.get("wallclock", "")),
             "away_score": p.get("awayScore", ""),
             "home_score": p.get("homeScore", ""),
-            "is_goal": "goal" in text.lower(),
-            "is_penalty": "penalty" in text.lower(),
             "emoji": get_play_emoji(text),
         })
     plays.sort(key=lambda x: x["seq"])
@@ -186,7 +179,6 @@ if st.session_state.view == "game":
     with nav_col2:
         if st.button("🔄 Refresh", use_container_width=True):
             st.session_state.cached_plays = None
-            st.session_state.last_refresh = datetime.now(ET)
             st.rerun()
     with nav_col3:
         if st.session_state.last_refresh:
@@ -218,171 +210,87 @@ if st.session_state.view == "game":
         st.image(st.session_state.home_logo, width=80)
     st.divider()
 
-    # 4. Filter Section (Ungrouped Layout)
-    def period_sort_key(label):
-        if label.startswith('P'):
-            try: return int(label[1:])
-            except: return 99
-        if label == 'OT': return 100
-        if label.startswith('OT'):
-            try: return 100 + int(label[2:])
-            except: return 101
-        if label == 'SO': return 200
-        return 300
-
+    # 4. Filter Section
     raw_periods = list({p["period_label"] for p in plays})
-    all_periods = sorted(raw_periods, key=period_sort_key)
+    def p_key(l):
+        if l.startswith('P'): return int(l[1:])
+        if l == 'OT': return 100
+        if l.startswith('OT'): return 100 + int(l[2:])
+        return 200
+    all_periods = sorted(raw_periods, key=p_key)
 
-    # Individual Checkboxes
     USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
-    selected_periods = [] # Initialize as empty
-    if USE_PERIOD_FILTER:
-        selected_periods = st.multiselect("Select Periods", options=all_periods)
+    selected_periods = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
 
     USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
     START_DT = END_DT = None
     if USE_TIME_FILTER:
         all_wall_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
-        game_start_dt = min(all_wall_dts) if all_wall_dts else datetime.now(ET)
-        game_end_dt   = max(all_wall_dts) if all_wall_dts else datetime.now(ET)
-
-        st.markdown("**Start date/time (ET)**")
+        game_start = min(all_wall_dts) if all_wall_dts else datetime.now(ET)
+        game_end   = max(all_wall_dts) if all_wall_dts else datetime.now(ET)
         sc1, sc2 = st.columns(2)
         with sc1:
-            start_date = st.date_input(
-                "Start date", 
-                value=game_start_dt.date(), 
-                key="sd",
-                format="YYYY-MM-DD" # <--- ADD THIS
-            )
+            s_date = st.date_input("Start date", value=game_start.date())
+            s_time = st.time_input("Start time", value=game_start.time())
         with sc2:
-            start_time = st.time_input("Start time", value=game_start_dt.time(), key="st", step=60)
-
-        st.markdown("**End date/time (ET)**")
-        ec1, ec2 = st.columns(2)
-        with ec1:
-            end_date = st.date_input(
-                "End date", 
-                value=game_end_dt.date(), 
-                key="ed",
-                format="YYYY-MM-DD" # <--- ADD THIS
-            )
-        with ec2:
-            end_time = st.time_input("End time", value=game_end_dt.time(), key="et", step=60)
-        
-        START_DT = datetime.combine(start_date, start_time).replace(tzinfo=ET)
-        END_DT   = datetime.combine(end_date, end_time).replace(tzinfo=ET)
+            e_date = st.date_input("End date", value=game_end.date())
+            e_time = st.time_input("End time", value=game_end.time())
+        START_DT = datetime.combine(s_date, s_time).replace(tzinfo=ET)
+        END_DT   = datetime.combine(e_date, e_time).replace(tzinfo=ET)
 
     USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
 
-    # --- THE FIX IS HERE ---
     if st.button("🚀 Apply Filters"):
         def passes(p):
-            # 1. Fixed Period Logic: Check if selection exists
-            if USE_PERIOD_FILTER and selected_periods:
-                if p["period_label"] not in selected_periods:
-                    return False
-            
-            # 2. Time Logic
-            if USE_TIME_FILTER and START_DT and END_DT:
-                if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
-                    return False
-            
-            # 3. Goal Logic
-            if USE_GOAL_FILTER and p["type_text"] != "Goal":
-                return False
-                
+            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: return False
+            if USE_TIME_FILTER and START_DT and END_DT and (not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT)): return False
+            if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
             return True
-
-        # Re-run filter on every click
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
 
-    # 5. Display Banner Info
+    # 5. Display Feed
     display_list = st.session_state.filtered_plays if st.session_state.filters_applied else plays
-    
     if st.session_state.filters_applied:
-        st.info(f"Showing **{len(display_list)}** of **{len(plays)}** plays based on active filters.")
+        st.info(f"Showing **{len(display_list)}** of **{len(plays)}** plays.")
 
-    # 6. Render Play-by-Play Feed
     if not display_list:
-        st.warning("No plays found for the selected filters.")
+        st.warning("No plays found.")
     else:
         for p in display_list:
             emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
-            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}")
+            # SAFE KEY ACCESS for strength
+            strength = p.get("strength", "")
+            s_badge = f" | `{strength}`" if strength else ""
+            
+            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}{s_badge}")
             st.markdown(f"🎯 **Event:** {p['type_text']}")
             st.markdown(f"📋 **Play:** {p['text']}")
             st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
-            if "situation" in p and p["situation"]:
-                st.markdown(f"⚖️ **Situation:** {p['situation']}")
             if p["wall_et"]:
                 st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
             st.divider()
-        
+
 # ======================================================
 # SCHEDULE VIEW
 # ======================================================
 else:
-    # 1. Calendar Logic: Fix double-click using a callback
     def handle_date_change():
         st.session_state.sched_date = st.session_state.calendar_widget
 
-    # Display the calendar (Monday-start is handled by the JS at the top of the script)
-    date = st.date_input(
-        "Select date", 
-        value=st.session_state.sched_date,
-        key="calendar_widget",
-        on_change=handle_date_change,
-        format="YYYY-MM-DD"
-    )
-
-    # 2. Update state and fetch games
-    st.session_state.sched_date = date
+    date = st.date_input("Select date", value=st.session_state.sched_date, key="calendar_widget", on_change=handle_date_change)
     games = fetch_scoreboard(date.strftime("%Y-%m-%d"))
 
-    # 3. Dashboard Styling (NBA-style layout)
     st.markdown("""
         <style>
-            .sched-team-row { 
-                display: flex; 
-                align-items: center; 
-                gap: 12px; 
-                margin-bottom: 6px; 
-            }
-            .sched-team-name { 
-                font-size: 22px; 
-                font-weight: 800; 
-                color: #ffffff;
-            }
-            .sched-score { 
-                font-size: 22px; 
-                font-weight: 800; 
-                color: #888888; 
-                margin-left: auto; 
-            }
-            .sched-meta { 
-                font-size: 13px; 
-                color: #999999; 
-                border-top: 1px solid rgba(255,255,255,0.1); 
-                padding-top: 8px; 
-                margin-top: 8px;
-                display: flex;
-                align-items: center;
-            }
-            .sched-extra { 
-                background: #e67e22; 
-                color: #fff; 
-                font-size: 11px; 
-                padding: 2px 6px; 
-                border-radius: 4px; 
-                margin-left: 8px;
-                font-weight: bold;
-            }
+            .sched-team-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+            .sched-team-name { font-size: 22px; font-weight: 800; color: #ffffff; }
+            .sched-score { font-size: 22px; font-weight: 800; color: #888888; margin-left: auto; }
+            .sched-meta { font-size: 13px; color: #999999; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px; margin-top: 8px; display: flex; align-items: center; }
+            .sched-extra { background: #e67e22; color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-weight: bold; }
         </style>
     """, unsafe_allow_html=True)
 
-    # 4. Render Game Cards in 2 columns
     if not games:
         st.info(f"No games scheduled for {date.strftime('%Y-%m-%d')}.")
     else:
@@ -390,11 +298,6 @@ else:
         for i, g in enumerate(games):
             has_started = g["has_score"]
             ot_badge = f'<span class="sched-extra">OT</span>' if g["is_ot"] else ""
-            
-            meta_text = f"{g['time_str']} &middot; {g['state_name']}"
-            # -----------------------------
-            
-            # HTML for the card content
             card_html = f"""
             <div class="sched-team-row">
                 <img src="{g['away_logo']}" width="34"/>
@@ -406,34 +309,19 @@ else:
                 <span class="sched-team-name">{g['home_abbr']}</span>
                 <span class="sched-score">{g['home_score'] if has_started else ''}</span>
             </div>
-            <div class="sched-meta">
-                {meta_text}{ot_badge}
-            </div>
+            <div class="sched-meta">{g['time_str']} &middot; {g['state_name']}{ot_badge}</div>
             """
-            
             with cols[i % 2]:
                 with st.container(border=True):
                     st.markdown(card_html, unsafe_allow_html=True)
-                    
-                    # Button logic (NBA-style: disabled if game hasn't started)
                     btn_label = f"▶ Open {g['away_abbr']} @ {g['home_abbr']}" if has_started else "⏳ Not Started"
-                    
                     if st.button(btn_label, key=f"btn_{g['event_id']}", use_container_width=True, disabled=not has_started):
-                        # Set all necessary states to switch to Game Feed view
                         st.session_state.update({
-                            "view": "game",
-                            "event_id": g["event_id"],
-                            "away": g["away_abbr"],
-                            "home": g["home_abbr"],
-                            "away_logo": g["away_logo"],
-                            "home_logo": g["home_logo"],
-                            "away_score": g["away_score"],
-                            "home_score": g["home_score"],
-                            "game_state": g["state"],
-                            "filters_applied": False,
-                            "filtered_plays": None,
-                            "cached_plays": None,
-                            "cached_event_id": None,
-                            "last_refresh": datetime.now(ET)
+                            "view": "game", "event_id": g["event_id"],
+                            "away": g["away_abbr"], "home": g["home_abbr"],
+                            "away_logo": g["away_logo"], "home_logo": g["home_logo"],
+                            "away_score": g["away_score"], "home_score": g["home_score"],
+                            "game_state": g["state"], "filters_applied": False,
+                            "filtered_plays": None, "cached_plays": None, "cached_event_id": None
                         })
                         st.rerun()
