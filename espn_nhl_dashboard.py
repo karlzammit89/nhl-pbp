@@ -129,7 +129,6 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
-    # Update timestamp whenever data is fetched
     st.session_state.last_refresh = datetime.now(ET)
     
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
@@ -192,7 +191,6 @@ def get_parsed_plays(event_id: str) -> list:
 # GAME FEED VIEW
 # ======================================================
 if st.session_state.view == "game":
-    # 1. Navigation & Refresh Bar
     plays = get_parsed_plays(st.session_state.event_id)
     
     nav_col1, nav_col2, nav_col3, _ = st.columns([1.3, 1, 1.8, 5.9])
@@ -214,7 +212,6 @@ if st.session_state.view == "game":
             </div>
         ''', unsafe_allow_html=True)
             
-    # 3. Header Scoreboard
     st.markdown("<br>", unsafe_allow_html=True)
     head_c1, head_c2, head_c3 = st.columns([1, 6, 1])
     with head_c1: 
@@ -242,7 +239,6 @@ if st.session_state.view == "game":
         return 200
     all_periods = sorted(raw_periods, key=p_key)
 
-    # Filter by Actual Time Defaults
     all_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
     game_start_default = min(all_dts) if all_dts else None
     game_end_default   = max(all_dts) if all_dts else None
@@ -276,8 +272,9 @@ if st.session_state.view == "game":
         END_DT   = datetime.combine(end_date_input,   end_time_input).replace(tzinfo=ET)
 
     USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
-    USE_PP_FILTER = st.checkbox("🏒 Power Plays", value=False)
-    USE_GP_FILTER = st.checkbox("🥅 Goalie Pulled", value=False)
+    # UPDATED FILTERS BELOW
+    USE_PP_FILTER = st.checkbox("⚡ Power Plays Only", value=False)
+    USE_GP_FILTER = st.checkbox("🥅 Empty Net Only", value=False)
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
@@ -296,7 +293,7 @@ if st.session_state.view == "game":
         st.session_state.filters_applied = True
         st.rerun()
         
-    # --- INFO BANNERS (Replicated Format) ---
+    # --- INFO BANNERS ---
     filters_applied = st.session_state.get("filters_applied")
     display_list = st.session_state.filtered_plays if filters_applied else plays
     total = len(plays)
@@ -319,10 +316,10 @@ if st.session_state.view == "game":
             st.info(f"🚨 **Goals Only filter:** {n_goals} goal(s) in game — showing **{showing}** of **{total}** plays")
 
         if USE_PP_FILTER:
-            st.info(f"🏒 **Power Plays filter:** showing **{showing}** of **{total}** plays")
+            st.info(f"⚡ **Power Plays Only filter:** showing **{showing}** of **{total}** plays")
 
         if USE_GP_FILTER:
-            st.info(f"🥅 **Goalie Pulled filter:** showing **{showing}** of **{total}** plays")
+            st.info(f"🥅 **Empty Net Only filter:** showing **{showing}** of **{total}** plays")
 
     # Render plays
     for p in display_list:
