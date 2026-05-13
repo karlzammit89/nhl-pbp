@@ -206,25 +206,30 @@ if st.session_state.view == "game":
         selected_periods = st.multiselect("Select Periods", options=all_periods, default=[])
 
     if USE_TIME_FILTER:
-        # Get defaults for time pickers from the data
+        # 1. Get reference timestamps from the play data
         all_wall_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
-        game_start_dt = min(all_wall_dts) if all_wall_dts else None
-        game_end_dt   = max(all_wall_dts) if all_wall_dts else None
-        
-        def_sd = game_start_dt.date() if game_start_dt else ddate.today()
-        def_st = game_start_dt.time() if game_start_dt else dtime(18, 0)
-        def_et = game_end_dt.time() if game_end_dt else dtime(23, 59)
+        game_start_dt = min(all_wall_dts) if all_wall_dts else datetime.now(ET)
+        game_end_dt   = max(all_wall_dts) if all_wall_dts else datetime.now(ET)
 
-        st.markdown("**Filter by Actual Time (ET)**")
-        col_t1, col_t2 = st.columns(2)
-        with col_t1:
-            start_time_input = st.time_input("Start time", value=def_st)
-        with col_t2:
-            end_time_input = st.time_input("End time", value=def_et)
+        # 2. Start Date/Time Row (Matches image_3a4676.png)
+        st.markdown("**Start date/time (ET)**")
+        col_sd, col_st = st.columns(2)
+        with col_sd:
+            start_date = st.date_input("Start date", value=game_start_dt.date(), key="sd")
+        with col_st:
+            start_time = st.time_input("Start time", value=game_start_dt.time(), key="st")
         
-        # Combine with today's date for comparison
-        START_DT = datetime.combine(def_sd, start_time_input).replace(tzinfo=ET)
-        END_DT   = datetime.combine(def_sd, end_time_input).replace(tzinfo=ET)
+        # 3. End Date/Time Row (Matches image_3a4676.png)
+        st.markdown("**End date/time (ET)**")
+        col_ed, col_et = st.columns(2)
+        with col_ed:
+            end_date = st.date_input("End date", value=game_end_dt.date(), key="ed")
+        with col_et:
+            end_time = st.time_input("End time", value=game_end_dt.time(), key="et")
+        
+        # 4. Create final localized datetime objects for comparison
+        START_DT = datetime.combine(start_date, start_time).replace(tzinfo=ET)
+        END_DT   = datetime.combine(end_date, end_time).replace(tzinfo=ET)
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
