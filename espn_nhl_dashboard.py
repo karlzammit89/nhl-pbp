@@ -94,23 +94,25 @@ def period_label(period_num, period_type: str = "regulation") -> str:
 # =========================
 @st.cache_data(ttl=60)
 def fetch_scoreboard(date_str):
-    # 1. Fetch the data from ESPN
+    # Use the date string to hit the ESPN API
     url = f"https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?dates={date_str.replace('-', '')}"
+    
     try:
         response = requests.get(url)
-        data = response.json() # This defines 'data'
+        data = response.json()
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
+        st.error(f"API Error: {e}")
         return []
 
     games = []
-    # 2. Use data.get to safely access events
     for event in data.get("events", []):
         status = event.get("status", {})
         state_type = status.get("type", {})
         
-        # Clean Status Logic: Avoids the long date string
+        # --- CLEAN STATUS LOGIC ---
+        # We check the internal 'name' to avoid the messy 'description' field
         raw_name = state_type.get("name", "")
+        
         if raw_name == "STATUS_SCHEDULED":
             display_status = "Scheduled"
         elif raw_name == "STATUS_IN_PROGRESS":
@@ -118,38 +120,42 @@ def fetch_scoreboard(date_str):
         elif raw_name == "STATUS_FINAL":
             display_status = "Final"
         else:
+            # Fallback for Intermissions/OT
             display_status = state_type.get("shortDetail", "Scheduled")
 
-        # Process Time (assuming you have ET defined)
+        # --- TIME PROCESSING ---
         raw_date = event.get("date", "")
-        time_str = ""
+        time_str = "TBD"
         if raw_date:
+            # This is where your NameError was happening (pytz)
             utc_dt = datetime.strptime(raw_date, "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
             local_dt = utc_dt.astimezone(ET)
             time_str = local_dt.strftime("%H:%M ET")
 
-        # Get Teams
-        competitions = event.get("competitions", [{}])[0]
-        competitors = competitions.get("competitors", [])
+        # --- TEAM PROCESSING ---
+        competition = event.get("competitions", [{}])[0]
+        competitors = competition.get("competitors", [])
         
-        home = next((c for c in competitors if c["homeAway"] == "home"), {})
-        away = next((c for c in competitors if c["homeAway"] == "away"), {})
+        home_data = next((c for c in competitors if c["homeAway"] == "home"), {})
+        away_data = next((c for c in competitors if c["homeAway"] == "away"), {})
 
         games.append({
             "event_id": event.get("id"),
-            "state_name": display_status,
-            "state": state_type.get("state", ""),
+            "state_name": display_status, # "Scheduled" instead of "5/13 - 8:00 PM"
+            "state": state_type.get("state", "pre"),
             "time_str": time_str,
-            "home_abbr": home.get("team", {}).get("abbreviation"),
-            "away_abbr": away.get("team", {}).get("abbreviation"),
-            "home_logo": home.get("team", {}).get("logo"),
-            "away_logo": away.get("team", {}).get("logo"),
-            "home_score": home.get("score"),
-            "away_score": away.get("score"),
+            "home_abbr": home_data.get("team", {}).get("abbreviation", "TBD"),
+            "away_abbr": away_data.get("team", {}).get("abbreviation", "TBD"),
+            "home_logo": home_data.get("team", {}).get("logo"),
+            "away_logo": away_data.get("team", {}).get("logo"),
+            "home_score": home_data.get("score", "0"),
+            "away_score": away_data.get("score", "0"),
             "has_score": state_type.get("state") != "pre",
             "is_ot": "OT" in state_type.get("shortDetail", "")
         })
+        
     return games
+    
 def get_parsed_plays(event_id: str) -> list:
     st.session_state.last_refresh = datetime.now(ET)
     
