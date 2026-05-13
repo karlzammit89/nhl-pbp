@@ -128,54 +128,64 @@ def fetch_scoreboard(date_str: str) -> list:
         })
     return sorted(games, key=lambda x: x["time_str"])
 
-def get_parsed_plays(raw_plays):
+def get_parsed_plays(event_id: str) -> list:
+    # Update timestamp whenever data is fetched
+    st.session_state.last_refresh = datetime.now(ET)
+    
+    if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
+        return st.session_state.cached_plays
+    
+    resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
+    raw_plays = resp.json().get("plays", [])
     plays = []
+    
     for p in raw_plays:
         text = p.get("text", "")
-        # Get the official event type (PPG, ENG, etc.)
-        type_text = (p.get("type", {}).get("text", "") or "").upper()
         sit = p.get("situation", {})
         sit_code = str(sit.get("situationCode", ""))
         
-        # --- TIER 1: DECODE BITMASK (The most accurate source) ---
-        # Format: [Away Goalie][Away Skaters][Home Skaters][Home Goalie]
         away_s, home_s = 5, 5
         away_g_in, home_g_in = True, True
-        
+
         if len(sit_code) == 4:
             away_g_in = (sit_code[0] == '1')
             away_s    = int(sit_code[1])
             home_s    = int(sit_code[2])
             home_g_in = (sit_code[3] == '1')
+        elif sit.get("awaySkaters") is not None:
+            away_s = sit.get("awaySkaters")
+            home_s = sit.get("homeSkaters")
+        
+        lower_text = text.lower()
+        if (away_s == 5 and home_s == 5) and ("power play" in lower_text or "penalty" in lower_text):
+            if "home" in lower_text: home_s = 4 
+            else: away_s = 4
 
-        # --- TIER 2: FLAG DETECTION ---
-        l_text = text.lower()
-        # Power Play Check
-        is_pp = (away_s != home_s) or type_text in ["PPG", "SHG"] or "power play" in l_text
-        
-        # Empty Net Check
-        is_en = not (away_g_in and home_g_in) or type_text == "ENG" or "empty net" in l_text
-
-        # --- TIER 3: DYNAMIC LABELING ---
-        # Determine actual on-ice strength (skaters + extra attacker if goalie out)
-        adj_away = away_s + (0 if away_g_in else 1)
-        adj_home = home_s + (0 if home_g_in else 1)
-        
-        tags = []
-        if is_pp: tags.append("PP")
-        if is_en: tags.append("EN")
-        
-        strength_label = f"{adj_away}v{adj_home}"
-        if tags: strength_label += f" ({', '.join(tags)})"
+        strength_label = f"{away_s}v{home_s}"
+        if not away_g_in or not home_g_in:
+            strength_label += " (Empty Net)"
         
         plays.append({
+            "seq": int(p.get("sequenceNumber", 0)),
+            "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
+            "clock": p.get("clock", {}).get("displayValue", ""),
+            "type_text": p.get("type", {}).get("text", ""),
             "text": text,
             "strength": strength_label,
-            "is_pp": is_pp,
-            "is_en": is_en,
-            "type_text": type_text,
-            # ... keep your existing fields (period, clock, scores) ...
+            "away_skaters": away_s,
+            "home_skaters": home_s,
+            "away_g_in": away_g_in,
+            "home_g_in": home_g_in,
+            "wall_et": fmt_et_full(p.get("wallclock", "")),
+            "wall_dt": to_et(p.get("wallclock", "")),
+            "away_score": p.get("awayScore", ""),
+            "home_score": p.get("homeScore", ""),
+            "emoji": get_play_emoji(text),
         })
+    
+    plays.sort(key=lambda x: x["seq"])
+    st.session_state.cached_plays = plays
+    st.session_state.cached_event_id = event_id
     return plays
 
 # ======================================================
@@ -241,18 +251,13 @@ if st.session_state.view == "game":
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
-            # These checks must be indented inside the function
-            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: 
-                return False
-            if USE_GOAL_FILTER and "GOAL" not in p["type_text"]: 
-                return False
-            if USE_PP_FILTER and not p["is_pp"]: 
-                return False
-            if USE_GP_FILTER and not p["is_en"]: 
-                return False
+            a_s, h_s = p.get("away_skaters", 5), p.get("home_skaters", 5)
+            a_g, h_g = p.get("away_g_in", True), p.get("home_g_in", True)
+            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: return False
+            if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
+            if USE_PP_FILTER and (a_s == h_s or not a_g or not h_g): return False
+            if USE_GP_FILTER and (a_g and h_g): return False
             return True
-
-        # This must be indented inside the 'if st.button' block
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
         st.rerun()
