@@ -308,8 +308,12 @@ else:
     def handle_date_change():
         st.session_state.sched_date = st.session_state.calendar_widget
 
+    # date_input defaults to YYYY-MM-DD in most browser locales
     date = st.date_input("Select date", value=st.session_state.sched_date, key="calendar_widget", on_change=handle_date_change)
-    games = fetch_scoreboard(date.strftime("%Y-%m-%d"))
+    
+    # Ensuring the date string for the API and display is YYYY-MM-DD
+    formatted_date = date.strftime("%Y-%m-%d")
+    games = fetch_scoreboard(formatted_date)
 
     st.markdown("""
         <style>
@@ -322,12 +326,13 @@ else:
     """, unsafe_allow_html=True)
 
     if not games:
-        st.info(f"No games scheduled for {date.strftime('%Y-%m-%d')}.")
+        st.info(f"No games scheduled for {formatted_date}.")
     else:
         cols = st.columns(2)
         for i, g in enumerate(games):
             has_started = g["has_score"]
             ot_badge = f'<span class="sched-extra">OT</span>' if g["is_ot"] else ""
+            
             card_html = f"""
             <div class="sched-team-row">
                 <img src="{g['away_logo']}" width="34"/>
@@ -341,11 +346,26 @@ else:
             </div>
             <div class="sched-meta">{g['time_str']} &middot; {g['state_name']}{ot_badge}</div>
             """
+            
             with cols[i % 2]:
                 with st.container(border=True):
                     st.markdown(card_html, unsafe_allow_html=True)
-                    btn_label = f"▶ Open {g['away_abbr']} @ {g['home_abbr']}" if has_started else "⏳ Not Started"
-                    if st.button(btn_label, key=f"btn_{g['event_id']}", use_container_width=True, disabled=not has_started):
+                    
+                    # Logic for Button Label and Tooltip (help)
+                    if has_started:
+                        btn_label = f"▶ Open {g['away_abbr']} @ {g['home_abbr']}"
+                        tooltip_text = None # No tooltip needed if active
+                    else:
+                        btn_label = "⏳ Not Started"
+                        tooltip_text = "Data will be available once the game starts."
+                    
+                    if st.button(
+                        btn_label, 
+                        key=f"btn_{g['event_id']}", 
+                        use_container_width=True, 
+                        disabled=not has_started,
+                        help=tooltip_text  # This creates the hover effect
+                    ):
                         st.session_state.update({
                             "view": "game", "event_id": g["event_id"],
                             "away": g["away_abbr"], "home": g["home_abbr"],
