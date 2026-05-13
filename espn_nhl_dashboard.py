@@ -206,28 +206,33 @@ if st.session_state.view == "game":
         selected_periods = st.multiselect("Select Periods", options=all_periods, default=[])
 
     if USE_TIME_FILTER:
-        # 1. Get reference timestamps from the play data
+        # 1. Extract all play timestamps to find the real game boundaries
         all_wall_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
+        
+        # Fallback to current time if no plays have timestamps yet
         game_start_dt = min(all_wall_dts) if all_wall_dts else datetime.now(ET)
         game_end_dt   = max(all_wall_dts) if all_wall_dts else datetime.now(ET)
 
-        # 2. Start Date/Time Row (Matches image_3a4676.png)
+        # 2. Start Date/Time Row
         st.markdown("**Start date/time (ET)**")
         col_sd, col_st = st.columns(2)
         with col_sd:
+            # Matches date format in image_3a3f11.png
             start_date = st.date_input("Start date", value=game_start_dt.date(), key="sd")
         with col_st:
-            start_time = st.time_input("Start time", value=game_start_dt.time(), key="st")
+            # Setting 'value' ensures the dropdown starts at the game's first play
+            start_time = st.time_input("Start time", value=game_start_dt.time(), key="st", step=60)
         
-        # 3. End Date/Time Row (Matches image_3a4676.png)
+        # 3. End Date/Time Row
         st.markdown("**End date/time (ET)**")
         col_ed, col_et = st.columns(2)
         with col_ed:
             end_date = st.date_input("End date", value=game_end_dt.date(), key="ed")
         with col_et:
-            end_time = st.time_input("End time", value=game_end_dt.time(), key="et")
+            # Setting 'value' ensures the dropdown starts at the game's last play
+            end_time = st.time_input("End time", value=game_end_dt.time(), key="et", step=60)
         
-        # 4. Create final localized datetime objects for comparison
+        # 4. Final localized objects for the filter logic
         START_DT = datetime.combine(start_date, start_time).replace(tzinfo=ET)
         END_DT   = datetime.combine(end_date, end_time).replace(tzinfo=ET)
 
