@@ -135,13 +135,17 @@ def get_parsed_plays(event_id: str) -> list:
     resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
     raw_plays = resp.json().get("plays", [])
     plays = []
+    
     for p in raw_plays:
-        # --- PLAYER STRENGTH LOGIC ---
+        # --- NEW STRENGTH LOGIC ---
         sit = p.get("situation", {})
-        away_s = sit.get("awaySkaters")
-        home_s = sit.get("homeSkaters")
-        strength = f"{away_s}v{home_s}" if away_s is not None and home_s is not None else ""
+        away_skaters = sit.get("awaySkaters")
+        home_skaters = sit.get("homeSkaters")
         
+        # Build the 5v4 string if data is available
+        strength_label = f"{away_skaters}v{home_skaters}" if away_skaters and home_skaters else ""
+        # --------------------------
+
         p_obj = p.get("period", {})
         t_obj = p.get("type", {})
         text = p.get("text", "")
@@ -152,13 +156,14 @@ def get_parsed_plays(event_id: str) -> list:
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": t_obj.get("text", ""),
             "text": text,
-            "strength": strength,
+            "strength": strength_label,  # Add this to the dictionary
             "wall_et": fmt_et_full(p.get("wallclock", "")),
             "wall_dt": to_et(p.get("wallclock", "")),
             "away_score": p.get("awayScore", ""),
             "home_score": p.get("homeScore", ""),
             "emoji": get_play_emoji(text),
         })
+    
     plays.sort(key=lambda x: x["seq"])
     st.session_state.cached_plays = plays
     st.session_state.cached_event_id = event_id
@@ -258,18 +263,21 @@ if st.session_state.view == "game":
         st.warning("No plays found.")
     else:
         for p in display_list:
-            emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
-            # SAFE KEY ACCESS for strength
-            strength = p.get("strength", "")
-            s_badge = f" | `{strength}`" if strength else ""
-            
-            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}{s_badge}")
-            st.markdown(f"🎯 **Event:** {p['type_text']}")
-            st.markdown(f"📋 **Play:** {p['text']}")
-            st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
-            if p["wall_et"]:
-                st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
-            st.divider()
+    emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
+    
+    # Use .get() to avoid KeyErrors and format the badge
+    strength = p.get("strength", "")
+    strength_badge = f" | `{strength}`" if strength else ""
+    
+    st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}{strength_badge}")
+    
+    st.markdown(f"🎯 **Event:** {p['type_text']}")
+    st.markdown(f"📋 **Play:** {p['text']}")
+    st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
+    
+    if p["wall_et"]:
+        st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+    st.divider()
 
 # ======================================================
 # SCHEDULE VIEW
