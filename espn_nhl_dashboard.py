@@ -175,16 +175,17 @@ def get_parsed_plays(event_id: str) -> list:
             "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": p.get("type", {}).get("text", ""),
-            "text": p.get("text", ""),
+            "text": text,
             "strength": strength_label,
             "away_skaters": away_s,
             "home_skaters": home_s,
             "away_g_in": away_g_in,
             "home_g_in": home_g_in,
+            "wall_et": fmt_et_full(p.get("wallclock", "")), # Ensure this matches your display loop
             "wall_dt": to_et(p.get("wallclock", "")),
             "away_score": p.get("awayScore", ""),
             "home_score": p.get("homeScore", ""),
-            "emoji": get_play_emoji(p.get("text", "")),
+            "emoji": get_play_emoji(text),
         })
     
     plays.sort(key=lambda x: x["seq"])
@@ -306,24 +307,23 @@ if st.session_state.view == "game":
         st.warning("No plays found for the selected filters.")
     else:
         for p in display_list:
-            emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
-            
-            # 1. Header (Keeping it clean with just Period and Clock)
-            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}")
-            
-            # 2. Separate Event Fields
-            st.markdown(f"🎯 **Event:** {p['type_text']}")
-            
-            # --- NEW SEPARATE FIELD ---
-            strength = p.get("strength") or "5v5"
-            st.markdown(f"⚖️ **Strength:** `{strength}`")
-            
-            st.markdown(f"📋 **Play:** {p['text']}")
-            st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
-            
-            if p["wall_et"]:
-                st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
-            st.divider()
+        emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+        
+        st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
+        
+        st.markdown(f"🎯 **Event:** {p.get('type_text')}")
+        
+        strength = p.get("strength") or "5v5"
+        st.markdown(f"⚖️ **Strength:** `{strength}`")
+        
+        st.markdown(f"📋 **Play:** {p.get('text')}")
+        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+        
+        # Use .get() here to prevent the KeyError you saw
+        wall_time = p.get("wall_et")
+        if wall_time:
+            st.markdown(f"🕐 **Time (ET):** `{wall_time}`")
+        st.divider()
 
 # ======================================================
 # SCHEDULE VIEW
