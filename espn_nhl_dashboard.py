@@ -129,60 +129,71 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
+    """
+    Fetches and parses play-by-play data from ESPN with smart detection
+    for Power Plays (PP) and Empty Net (EN) situations based on the 
+    4-digit situationCode: [AwayGoalie][AwaySkaters][HomeSkaters][HomeGolie]
+    """
+    # Update timestamp whenever data is fetched
     st.session_state.last_refresh = datetime.now(ET)
     
+    # Return cached data if available for this event
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
         return st.session_state.cached_plays
     
-    resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
-    raw_plays = resp.json().get("plays", [])
+    try:
+        resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
+        resp.raise_for_status()
+        raw_plays = resp.json().get("plays", [])
+    except Exception as e:
+        st.error(f"Error fetching game data: {e}")
+        return []
+
     plays = []
-    
     for p in raw_plays:
         text = p.get("text", "")
         sit = p.get("situation", {})
-        # situationCode: [AwayGoalie][AwaySkaters][HomeSkaters][HomeGoalie]
+        # The 4-digit code is the most reliable way to detect goalie status and skaters
         sit_code = str(sit.get("situationCode", ""))
         
-        # Default state
+        # Default starting state
         away_s, home_s = 5, 5
         away_g_in, home_g_in = True, True
 
-        # 1. Primary: Extract from 4-digit Code (e.g., "1541")
+        # 1. PRIMARY LOGIC: Parse the 4-digit situationCode
+        # Digits: 0=Away Goalie, 1=Away Skaters, 2=Home Skaters, 3=Home Goalie
         if len(sit_code) == 4:
             away_g_in = (sit_code[0] == '1')
             away_s    = int(sit_code[1])
             home_s    = int(sit_code[2])
             home_g_in = (sit_code[3] == '1')
         
-        # 2. Secondary: Fallback to individual skater counts
+        # 2. SECONDARY LOGIC: Fallback to individual fields if Code is missing
         elif sit.get("awaySkaters") is not None:
             away_s = sit.get("awaySkaters")
             home_s = sit.get("homeSkaters")
 
-        # 3. Text-Based refinement (Catching labels the API code misses)
-        lower_text = text.lower()
-        is_pp_text = "power play" in lower_text or "ppg" in lower_text
-        is_en_text = "empty net" in lower_text
-
-        # Construct Human-Readable Strength Label
-        # e.g., "5v4 (PP)", "6v5 (Away EN)", "3v3"
+        # 3. CONSTRUCT STRENGTH LABEL
+        # This fixes the issue where 0651 showed as 5v5 in image_e97e81.png
         strength_label = f"{away_s}v{home_s}"
+        
+        lower_text = text.lower()
+        is_pp_keyword = "power play" in lower_text or "ppg" in lower_text
         
         if not away_g_in:
             strength_label += " (Away EN)"
         elif not home_g_in:
             strength_label += " (Home EN)"
-        elif is_en_text and "EN" not in strength_label:
-            strength_label += " (EN)"
-            
-        if (away_s != home_s or is_pp_text) and "EN" not in strength_label:
-            # Only tag PP if it's not already an Empty Net situation
+        # If skaters are uneven OR it's a known PPG but goalie is in, mark as PP
+        elif away_s != home_s or is_pp_keyword:
             strength_label += " (PP)"
 
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
-            "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
+            "period_label": period_label(
+                p.get("period", {}).get("number", 1), 
+                p.get("period", {}).get("type", "")
+            ),
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": p.get("type", {}).get("text", ""),
             "text": text,
@@ -197,10 +208,15 @@ def get_parsed_plays(event_id: str) -> list:
             "emoji": get_play_emoji(text),
         })
     
+    # Sort by sequence to ensure chronological feed
     plays.sort(key=lambda x: x["seq"])
+    
+    # Cache results
     st.session_state.cached_plays = plays
     st.session_state.cached_event_id = event_id
+    
     return plays
+    
 # ======================================================
 # GAME FEED VIEW
 # ======================================================
