@@ -409,7 +409,7 @@ else:
                             "filters_applied": False,
                             "filtered_plays": None,
                             "cached_plays": None,
-                            "cached_event_id": None
+                            "cached_event_id": None,
                             "last_refresh": datetime.now(ET)
                         })
                         st.rerun()
