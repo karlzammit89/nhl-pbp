@@ -93,38 +93,36 @@ def period_label(period_num, period_type: str = "regulation") -> str:
 # CACHED API CALLS
 # =========================
 @st.cache_data(ttl=30, show_spinner=False)
-def fetch_scoreboard(date_str: str) -> list:
-    date_compact = date_str.replace("-", "")
-    resp = requests.get(ESPN_SCOREBOARD, params={"dates": date_compact, "limit": 25}, timeout=10)
-    data = resp.json()
-    games = []
+def fetch_scoreboard(date_str):
+    # ... (existing code to get data) ...
     for event in data.get("events", []):
-        comp = event.get("competitions", [{}])[0]
-        status = comp.get("status", {})
-        state = status.get("type", {}).get("state", "pre")
-        competitors = comp.get("competitors", [])
-        away = next(c for c in competitors if c.get("homeAway") == "away")
-        home = next(c for c in competitors if c.get("homeAway") == "home")
+        status = event.get("status", {})
+        state_type = status.get("type", {})
         
-        start_dt = to_et(event.get("date", ""))
-        is_final, is_live = (state == "post"), (state == "in")
+        # FIX: Explicitly check the status name to avoid the long date string
+        raw_name = state_type.get("name", "")
         
+        if raw_name == "STATUS_SCHEDULED":
+            display_status = "Scheduled"
+        elif raw_name == "STATUS_IN_PROGRESS":
+            display_status = state_type.get("shortDetail", "Live")
+        elif raw_name == "STATUS_FINAL":
+            display_status = "Final"
+        else:
+            # Fallback to shortDetail which is usually just the period (e.g., '2nd')
+            # instead of 'description' which contains the date.
+            display_status = state_type.get("shortDetail", "Scheduled")
+
+        # ... (logic for home/away teams) ...
+
+        # Update the dictionary entry you append to the games list:
         games.append({
-            "event_id": event.get("id", ""),
-            "state": state,
-            "state_name": status.get("type", {}).get("shortDetail", ""),
-            "is_live": is_live, "is_final": is_final,
-            "is_ot": status.get("period", 0) > 3,
-            "away_abbr": away.get("team", {}).get("abbreviation", "?"),
-            "home_abbr": home.get("team", {}).get("abbreviation", "?"),
-            "away_logo": away.get("team", {}).get("logo", ""),
-            "home_logo": home.get("team", {}).get("logo", ""),
-            "away_score": int(away.get("score", 0) or 0),
-            "home_score": int(home.get("score", 0) or 0),
-            "has_score": is_live or is_final,
-            "time_str": fmt_game_time(start_dt),
+            "event_id": event.get("id"),
+            "state_name": display_status,  # <--- Use the cleaned variable here
+            "time_str": time_str,          # This should be your 24h ET time
+            # ... (rest of your existing fields) ...
         })
-    return sorted(games, key=lambda x: x["time_str"])
+    return games
 
 def get_parsed_plays(event_id: str) -> list:
     st.session_state.last_refresh = datetime.now(ET)
@@ -382,9 +380,8 @@ else:
             ot_badge = f'<span class="sched-extra">OT</span>' if g["is_ot"] else ""
             
             meta_text = f"{g['time_str']} &middot; {g['state_name']}"
-            # -----------------------------
-            
-            # HTML for the card content
+
+# Ensure your card_html uses {meta_text}:
             card_html = f"""
             <div class="sched-team-row">
                 <img src="{g['away_logo']}" width="34"/>
