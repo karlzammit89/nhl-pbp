@@ -192,29 +192,88 @@ if st.session_state.view == "game":
     with c3: st.image(st.session_state.home_logo, width=60)
     st.divider()
 
-    # Filters
+    # --- Filters ---
     all_periods = sorted(list({p["period_label"] for p in plays}))
-    f_p = st.checkbox("🏒 Filter by Period")
-    f_t = st.checkbox("🕐 Filter by Actual Time (ET)")
-    f_g = st.checkbox("🚨 Goals Only")
-
-    sel_p = st.multiselect("Select Periods", all_periods) if f_p else []
     
-    if f_t:
+    USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
+    USE_TIME_FILTER   = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
+    USE_GOAL_FILTER   = st.checkbox("🚨 Goals Only", value=False)
+
+    selected_periods = []
+    START_DT = END_DT = None
+
+    if USE_PERIOD_FILTER:
+        selected_periods = st.multiselect("Select Periods", options=all_periods, default=[])
+
+    if USE_TIME_FILTER:
+        # Get defaults for time pickers from the data
+        all_wall_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
+        game_start_dt = min(all_wall_dts) if all_wall_dts else None
+        game_end_dt   = max(all_wall_dts) if all_wall_dts else None
+        
+        def_sd = game_start_dt.date() if game_start_dt else ddate.today()
+        def_st = game_start_dt.time() if game_start_dt else dtime(18, 0)
+        def_et = game_end_dt.time() if game_end_dt else dtime(23, 59)
+
+        st.markdown("**Filter by Actual Time (ET)**")
         col_t1, col_t2 = st.columns(2)
-        with col_t1: start_t = st.time_input("Start Time", dtime(18,0))
-        with col_t2: end_t = st.time_input("End Time", dtime(23,59))
+        with col_t1:
+            start_time_input = st.time_input("Start time", value=def_st)
+        with col_t2:
+            end_time_input = st.time_input("End time", value=def_et)
+        
+        # Combine with today's date for comparison
+        START_DT = datetime.combine(def_sd, start_time_input).replace(tzinfo=ET)
+        END_DT   = datetime.combine(def_sd, end_time_input).replace(tzinfo=ET)
 
     if st.button("🚀 Apply Filters"):
-        st.session_state.filters_applied = True
-        # Filter logic here...
+        def passes(p):
+            if USE_PERIOD_FILTER and selected_periods:
+                if p["period_label"] not in selected_periods:
+                    return False
+            if USE_TIME_FILTER and START_DT and END_DT:
+                if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
+                    return False
+            if USE_GOAL_FILTER and not p["is_goal"]:
+                return False
+            return True
 
-    # Render loop
-    for p in (st.session_state.filtered_plays if st.session_state.filters_applied else plays):
+        st.session_state.filtered_plays = [p for p in plays if passes(p)]
+        st.session_state.filters_applied = True
+
+    # Determine which list to render
+    filters_applied = st.session_state.filters_applied
+    filtered = st.session_state.filtered_plays if (filters_applied and st.session_state.filtered_plays is not None) else plays
+
+    # Display Info Banners (Matching NBA UI)
+    if filters_applied:
+        total = len(plays)
+        showing = len(filtered)
+        if showing == 0:
+            st.warning("⚠️ No results found — please check the filters applied.")
+            st.stop()
+        
+        if USE_PERIOD_FILTER:
+            st.info(f"🏒 **Period filter:** {', '.join(selected_periods)} — showing **{showing}** of **{total}** plays")
+        if USE_TIME_FILTER:
+            st.info(f"🕐 **Time filter:** {START_DT.strftime('%H:%M')} → {END_DT.strftime('%H:%M')} ET — showing **{showing}** of **{total}** plays")
+        if USE_GOAL_FILTER:
+            st.info(f"🚨 **Goals Only filter:** showing **{showing}** of **{total}** plays")
+
+    # --- Render loop ---
+    for p in filtered:
         st.subheader(f"{p['emoji']} {p['period_label']} | ⏱️ {p['clock']}")
-        st.markdown(f"📋 **Play:** {p['text']}")
+        
+        if p["is_goal"]:
+            st.markdown(f"📋 **Play:** {p['text']} &nbsp; 🔥 *Goal!*")
+        else:
+            st.markdown(f"📋 **Play:** {p['text']}")
+            
         st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
-        if p["wall_et"]: st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+        
+        if p["wall_et"]:
+            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+        
         st.divider()
 
 # ======================================================
