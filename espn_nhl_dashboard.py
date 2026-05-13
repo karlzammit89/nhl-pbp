@@ -14,7 +14,10 @@ st.components.v1.html("""
 <script>
 (function() {
     const orig = Intl.DateTimeFormat;
-    Intl.DateTimeFormat = function(l, o) { return new orig('en-GB', o); };
+    Intl.DateTimeFormat = function(l, o) { 
+        // Force the date separator to be a dash
+        return new orig('en-CA', o); // en-CA uses YYYY-MM-DD by default
+    };
     Intl.DateTimeFormat.supportedLocalesOf = orig.supportedLocalesOf.bind(orig);
 })();
 </script>
@@ -313,7 +316,9 @@ else:
     
     # Ensuring the date string for the API and display is YYYY-MM-DD
     formatted_date = date.strftime("%Y-%m-%d")
-    games = fetch_scoreboard(formatted_date)
+
+if not games:
+    st.info(f"No games scheduled for {formatted_date}.")
 
     st.markdown("""
         <style>
