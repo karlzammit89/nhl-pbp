@@ -131,66 +131,63 @@ def fetch_scoreboard(date_str: str) -> list:
 def get_parsed_plays(event_id: str) -> list:
     st.session_state.last_refresh = datetime.now(ET)
     
-    if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
-        return st.session_state.cached_plays
-    
-    resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
-    raw_plays = resp.json().get("plays", [])
+    # ... (Keep existing requests/caching code) ...
+
     plays = []
-    
     for p in raw_plays:
         text = p.get("text", "")
-        type_text = p.get("type", {}).get("text", "")
+        type_text = (p.get("type", {}).get("text", "") or "").upper()
         sit = p.get("situation", {})
         sit_code = str(sit.get("situationCode", ""))
         
-        # Default Manpower
+        # 1. Base Values
         away_s, home_s = 5, 5
         away_g_in, home_g_in = True, True
-
-        # Layer 1: Decode ESPN Situation Code [AwayGoalie][AwaySkaters][HomeSkaters][HomeGoalie]
+        
+        # 2. Tier 1: Decode Code if valid
         if len(sit_code) == 4:
             away_g_in = (sit_code[0] == '1')
-            away_s    = int(sit_code[1])
-            home_s    = int(sit_code[2])
+            away_s = int(sit_code[1])
+            home_s = int(sit_code[2])
             home_g_in = (sit_code[3] == '1')
-        
-        # Layer 2: Cross-reference with Official Goal Types (PPG, SHG, ENG)
-        is_pp = (away_s != home_s) or (type_text in ["PPG", "SHG"])
-        is_en = not (away_g_in and home_g_in) or (type_text == "ENG") or ("empty net" in text.lower())
 
-        # Construct Strength Label
-        # If goalie is out, the team technically has an 'Extra Attacker'
-        display_away = away_s if away_g_in else away_s
-        display_home = home_s if home_g_in else home_s
-        
-        strength_val = f"{display_away}v{display_home}"
+        # 3. Tier 2 & 3: Robust Flags
+        l_text = text.lower()
+        is_pp = type_text in ["PPG", "SHG", "POWER PLAY GOAL"] or "power play" in l_text
+        is_en = type_text == "ENG" or "empty net" in l_text or not (away_g_in and home_g_in)
+
+        # 4. Logical Correction
         tags = []
-        if away_s > home_s: tags.append(f"{st.session_state.away} PP")
-        elif home_s > away_s: tags.append(f"{st.session_state.home} PP")
-        if not away_g_in: tags.append(f"{st.session_state.away} EN")
-        if not home_g_in: tags.append(f"{st.session_state.home} EN")
+        if is_pp:
+            # If manpower looks even, force a 5v4 label for the scoring/penalized team
+            if away_s == home_s:
+                if any(x in l_text for x in [st.session_state.away.lower(), "away"]): tags.append(f"{st.session_state.away} PP")
+                else: tags.append(f"{st.session_state.home} PP")
+            else:
+                pp_team = st.session_state.away if away_s > home_s else st.session_state.home
+                tags.append(f"{pp_team} PP")
         
-        strength_label = f"{strength_val} ({', '.join(tags)})" if tags else strength_val
+        if is_en:
+            en_team = st.session_state.away if (not away_g_in or "away" in l_text) else st.session_state.home
+            tags.append(f"{en_team} EN")
+
+        # 5. Final Strength String
+        # Adjust displayed skaters if goalie is out (Extra Attacker)
+        adj_away = away_s + (0 if away_g_in else 1)
+        adj_home = home_s + (0 if home_g_in else 1)
+        
+        strength_base = f"{adj_away}v{adj_home}"
+        unique_tags = " (" + ", ".join(sorted(set(tags))) + ")" if tags else ""
         
         plays.append({
-            "seq": int(p.get("sequenceNumber", 0)),
-            "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
-            "clock": p.get("clock", {}).get("displayValue", ""),
-            "type_text": type_text,
             "text": text,
-            "strength": strength_label,
+            "type_text": type_text,
+            "strength": f"{strength_base}{unique_tags}",
             "is_pp": is_pp,
             "is_en": is_en,
-            "wall_et": fmt_et_full(p.get("wallclock", "")),
-            "away_score": p.get("awayScore", ""),
-            "home_score": p.get("homeScore", ""),
-            "emoji": get_play_emoji(text),
+            # ... other fields ...
         })
     
-    plays.sort(key=lambda x: x["seq"], reverse=True) # Show newest plays at top
-    st.session_state.cached_plays = plays
-    st.session_state.cached_event_id = event_id
     return plays
 
 # ======================================================
