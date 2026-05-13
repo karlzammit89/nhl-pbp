@@ -240,23 +240,22 @@ if st.session_state.view == "game":
     USE_GP_FILTER = st.checkbox("🥅 Goalie Pulled", value=False)
 
     if st.button("🚀 Apply Filters"):
-    def passes(p):
-        # Existing filters
-        if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: 
-            return False
-        if USE_GOAL_FILTER and "GOAL" not in p["type_text"]: 
-            return False
-            
-        # NEW: Robust boolean filters
-        if USE_PP_FILTER and not p["is_pp"]: 
-            return False
-        if USE_GP_FILTER and not p["is_en"]: 
-            return False
-        return True
-    
-    st.session_state.filtered_plays = [p for p in plays if passes(p)]
-    st.session_state.filters_applied = True
-    st.rerun()
+        def passes(p):
+            # These checks must be indented inside the function
+            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: 
+                return False
+            if USE_GOAL_FILTER and "GOAL" not in p["type_text"]: 
+                return False
+            if USE_PP_FILTER and not p["is_pp"]: 
+                return False
+            if USE_GP_FILTER and not p["is_en"]: 
+                return False
+            return True
+
+        # This must be indented inside the 'if st.button' block
+        st.session_state.filtered_plays = [p for p in plays if passes(p)]
+        st.session_state.filters_applied = True
+        st.rerun()
         
     display_list = st.session_state.filtered_plays if st.session_state.get("filters_applied") else plays
     st.info(f"Showing {len(display_list)} of {len(plays)} plays.")
