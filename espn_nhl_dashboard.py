@@ -92,16 +92,25 @@ def period_label(period_num, period_type: str = "regulation") -> str:
 # =========================
 # CACHED API CALLS
 # =========================
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=60)
 def fetch_scoreboard(date_str):
-    # ... (existing code to get data) ...
+    # 1. Fetch the data from ESPN
+    url = f"https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?dates={date_str.replace('-', '')}"
+    try:
+        response = requests.get(url)
+        data = response.json() # This defines 'data'
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return []
+
+    games = []
+    # 2. Use data.get to safely access events
     for event in data.get("events", []):
         status = event.get("status", {})
         state_type = status.get("type", {})
         
-        # FIX: Explicitly check the status name to avoid the long date string
+        # Clean Status Logic: Avoids the long date string
         raw_name = state_type.get("name", "")
-        
         if raw_name == "STATUS_SCHEDULED":
             display_status = "Scheduled"
         elif raw_name == "STATUS_IN_PROGRESS":
@@ -109,21 +118,38 @@ def fetch_scoreboard(date_str):
         elif raw_name == "STATUS_FINAL":
             display_status = "Final"
         else:
-            # Fallback to shortDetail which is usually just the period (e.g., '2nd')
-            # instead of 'description' which contains the date.
             display_status = state_type.get("shortDetail", "Scheduled")
 
-        # ... (logic for home/away teams) ...
+        # Process Time (assuming you have ET defined)
+        raw_date = event.get("date", "")
+        time_str = ""
+        if raw_date:
+            utc_dt = datetime.strptime(raw_date, "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+            local_dt = utc_dt.astimezone(ET)
+            time_str = local_dt.strftime("%H:%M ET")
 
-        # Update the dictionary entry you append to the games list:
+        # Get Teams
+        competitions = event.get("competitions", [{}])[0]
+        competitors = competitions.get("competitors", [])
+        
+        home = next((c for c in competitors if c["homeAway"] == "home"), {})
+        away = next((c for c in competitors if c["homeAway"] == "away"), {})
+
         games.append({
             "event_id": event.get("id"),
-            "state_name": display_status,  # <--- Use the cleaned variable here
-            "time_str": time_str,          # This should be your 24h ET time
-            # ... (rest of your existing fields) ...
+            "state_name": display_status,
+            "state": state_type.get("state", ""),
+            "time_str": time_str,
+            "home_abbr": home.get("team", {}).get("abbreviation"),
+            "away_abbr": away.get("team", {}).get("abbreviation"),
+            "home_logo": home.get("team", {}).get("logo"),
+            "away_logo": away.get("team", {}).get("logo"),
+            "home_score": home.get("score"),
+            "away_score": away.get("score"),
+            "has_score": state_type.get("state") != "pre",
+            "is_ot": "OT" in state_type.get("shortDetail", "")
         })
     return games
-
 def get_parsed_plays(event_id: str) -> list:
     st.session_state.last_refresh = datetime.now(ET)
     
