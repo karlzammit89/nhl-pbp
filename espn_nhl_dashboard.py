@@ -302,23 +302,29 @@ if st.session_state.view == "game":
         st.warning("No plays found for the selected filters.")
     else:
         for p in display_list:
+            # 1. Header (Emoji | Period | Clock)
             emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
-        
             st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
-        
+            
+            # 2. Score Row
+            st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+            
+            # 3. Event and Strength Rows
             st.markdown(f"🎯 **Event:** {p.get('type_text')}")
-        
+            
             strength = p.get("strength") or "5v5"
             st.markdown(f"⚖️ **Strength:** `{strength}`")
-        
+            
+            # 4. Play Description Row
             st.markdown(f"📋 **Play:** {p.get('text')}")
-            st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
-        
-        # Use .get() here to prevent the KeyError you saw
-        wall_time = p.get("wall_et")
-        if wall_time:
-            st.markdown(f"🕐 **Time (ET):** `{wall_time}`")
-        st.divider()
+            
+            # 5. Actual Time Row (Formatted like image_2e7f1e.png)
+            wall_time = p.get("wall_et")
+            if wall_time:
+                st.markdown(f"🕐 **Time (ET):** `{wall_time}`")
+            
+            # --- THE SEPARATOR FROM image_2e7f1e.png ---
+            st.divider()
 
 # ======================================================
 # SCHEDULE VIEW
