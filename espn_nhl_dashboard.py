@@ -297,13 +297,16 @@ if st.session_state.view == "game":
         for p in display_list:
             emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
             
-            # Use 5v5 as a fallback if data is missing
-            strength = p.get("strength") or "5v5"
+            # 1. Header (Keeping it clean with just Period and Clock)
+            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}")
             
-            # Header with Period | Clock | Strength Badge
-            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']} | `{strength}`")
-            
+            # 2. Separate Event Fields
             st.markdown(f"🎯 **Event:** {p['type_text']}")
+            
+            # --- NEW SEPARATE FIELD ---
+            strength = p.get("strength") or "5v5"
+            st.markdown(f"⚖️ **Strength:** `{strength}`")
+            
             st.markdown(f"📋 **Play:** {p['text']}")
             st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
             
