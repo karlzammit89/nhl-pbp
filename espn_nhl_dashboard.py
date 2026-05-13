@@ -219,33 +219,62 @@ if st.session_state.view == "game":
     def p_key(l):
         if l.startswith('P'): return int(l[1:])
         if l == 'OT': return 100
+        if l.startswith('OT'): return 100 + int(l[2:])
         return 200
     all_periods = sorted(raw_periods, key=p_key)
 
+    # Stacked Checkboxes
     USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
-    selected_periods = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
+    if USE_PERIOD_FILTER:
+        selected_periods = st.multiselect("Select Periods", options=all_periods)
+    else:
+        selected_periods = []
 
-    # --- NEW FILTERS ---
-    col_f1, col_f2, col_f3 = st.columns(3)
-    with col_f1:
-        USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
-    with col_f2:
-        USE_PP_FILTER = st.checkbox("🏒 Power Plays (5v4/4v5)", value=False)
-    with col_f3:
-        USE_GP_FILTER = st.checkbox("🥅 Goalie Pulled (6v5/5v6)", value=False)
+    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
+    START_DT = END_DT = None
+    if USE_TIME_FILTER:
+        all_wall_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
+        game_start = min(all_wall_dts) if all_wall_dts else datetime.now(ET)
+        game_end   = max(all_wall_dts) if all_wall_dts else datetime.now(ET)
+        
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            s_date = st.date_input("Start date", value=game_start.date(), key="fs_date")
+            s_time = st.time_input("Start time", value=game_start.time(), key="fs_time")
+        with col_t2:
+            e_date = st.date_input("End date", value=game_end.date(), key="fe_date")
+            e_time = st.time_input("End time", value=game_end.time(), key="fe_time")
+        
+        START_DT = datetime.combine(s_date, s_time).replace(tzinfo=ET)
+        END_DT   = datetime.combine(e_date, e_time).replace(tzinfo=ET)
+
+    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
+    USE_PP_FILTER = st.checkbox("🏒 Power Plays (5v4/4v5/5v3/4v3)", value=False)
+    USE_GP_FILTER = st.checkbox("🥅 Goalie Pulled (6v5/5v6)", value=False)
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
-            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: return False
-            if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
+            # 1. Period Filter
+            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
+                return False
             
-            # Power Play Check
-            if USE_PP_FILTER:
-                skaters = {p.get("away_skaters"), p.get("home_skaters")}
-                if skaters != {5, 4} and skaters != {4, 3} and skaters != {5, 3}:
+            # 2. Actual Time Filter
+            if USE_TIME_FILTER and START_DT and END_DT:
+                if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
                     return False
             
-            # Goalie Pulled Check
+            # 3. Goal Filter
+            if USE_GOAL_FILTER and p["type_text"] != "Goal":
+                return False
+            
+            # 4. Power Play Filter
+            if USE_PP_FILTER:
+                skaters = {p.get("away_skaters"), p.get("home_skaters")}
+                # Checks for any man-advantage situation
+                if skaters not in [{5, 4}, {4, 3}, {5, 3}]:
+                    return False
+            
+            # 5. Goalie Pulled Filter
             if USE_GP_FILTER:
                 if p.get("away_skaters") != 6 and p.get("home_skaters") != 6:
                     return False
