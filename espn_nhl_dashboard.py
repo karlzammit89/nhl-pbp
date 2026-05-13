@@ -50,7 +50,7 @@ for k, v in {
     "filtered_plays": None,
     "cached_plays": None,
     "cached_event_id": None,
-    "last_refresh": datetime.now(ET), # Initialized to show on launch
+    "last_refresh": datetime.now(ET), 
     "sched_date": ddate.today(),
 }.items():
     if k not in st.session_state:
@@ -129,7 +129,6 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
-    # Update timestamp whenever data is fetched
     st.session_state.last_refresh = datetime.now(ET)
     
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
@@ -141,49 +140,55 @@ def get_parsed_plays(event_id: str) -> list:
     
     for p in raw_plays:
         text = p.get("text", "")
+        type_text = p.get("type", {}).get("text", "")
         sit = p.get("situation", {})
         sit_code = str(sit.get("situationCode", ""))
         
+        # Default Manpower
         away_s, home_s = 5, 5
         away_g_in, home_g_in = True, True
 
+        # Layer 1: Decode ESPN Situation Code [AwayGoalie][AwaySkaters][HomeSkaters][HomeGoalie]
         if len(sit_code) == 4:
             away_g_in = (sit_code[0] == '1')
             away_s    = int(sit_code[1])
             home_s    = int(sit_code[2])
             home_g_in = (sit_code[3] == '1')
-        elif sit.get("awaySkaters") is not None:
-            away_s = sit.get("awaySkaters")
-            home_s = sit.get("homeSkaters")
         
-        lower_text = text.lower()
-        if (away_s == 5 and home_s == 5) and ("power play" in lower_text or "penalty" in lower_text):
-            if "home" in lower_text: home_s = 4 
-            else: away_s = 4
+        # Layer 2: Cross-reference with Official Goal Types (PPG, SHG, ENG)
+        is_pp = (away_s != home_s) or (type_text in ["PPG", "SHG"])
+        is_en = not (away_g_in and home_g_in) or (type_text == "ENG") or ("empty net" in text.lower())
 
-        strength_label = f"{away_s}v{home_s}"
-        if not away_g_in or not home_g_in:
-            strength_label += " (Empty Net)"
+        # Construct Strength Label
+        # If goalie is out, the team technically has an 'Extra Attacker'
+        display_away = away_s if away_g_in else away_s
+        display_home = home_s if home_g_in else home_s
+        
+        strength_val = f"{display_away}v{display_home}"
+        tags = []
+        if away_s > home_s: tags.append(f"{st.session_state.away} PP")
+        elif home_s > away_s: tags.append(f"{st.session_state.home} PP")
+        if not away_g_in: tags.append(f"{st.session_state.away} EN")
+        if not home_g_in: tags.append(f"{st.session_state.home} EN")
+        
+        strength_label = f"{strength_val} ({', '.join(tags)})" if tags else strength_val
         
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
             "period_label": period_label(p.get("period", {}).get("number", 1), p.get("period", {}).get("type", "")),
             "clock": p.get("clock", {}).get("displayValue", ""),
-            "type_text": p.get("type", {}).get("text", ""),
+            "type_text": type_text,
             "text": text,
             "strength": strength_label,
-            "away_skaters": away_s,
-            "home_skaters": home_s,
-            "away_g_in": away_g_in,
-            "home_g_in": home_g_in,
+            "is_pp": is_pp,
+            "is_en": is_en,
             "wall_et": fmt_et_full(p.get("wallclock", "")),
-            "wall_dt": to_et(p.get("wallclock", "")),
             "away_score": p.get("awayScore", ""),
             "home_score": p.get("homeScore", ""),
             "emoji": get_play_emoji(text),
         })
     
-    plays.sort(key=lambda x: x["seq"])
+    plays.sort(key=lambda x: x["seq"], reverse=True) # Show newest plays at top
     st.session_state.cached_plays = plays
     st.session_state.cached_event_id = event_id
     return plays
@@ -192,7 +197,6 @@ def get_parsed_plays(event_id: str) -> list:
 # GAME FEED VIEW
 # ======================================================
 if st.session_state.view == "game":
-    # 1. Navigation & Refresh Bar
     plays = get_parsed_plays(st.session_state.event_id)
     
     nav_col1, nav_col2, nav_col3, _ = st.columns([1.3, 1, 1.8, 5.9])
@@ -207,7 +211,6 @@ if st.session_state.view == "game":
             st.session_state.cached_plays = None
             st.rerun()
     with nav_col3:
-        # Last refresh is now guaranteed to have a value from session_state init
         refresh_time = st.session_state.last_refresh.strftime("%H:%M:%S ET")
         st.markdown(f'''
             <div style="background-color:#2e7d32;color:white;padding:8px 16px;border-radius:4px;font-size:14px;font-weight:bold;text-align:center;">
@@ -215,11 +218,9 @@ if st.session_state.view == "game":
             </div>
         ''', unsafe_allow_html=True)
             
-    # 3. Header Scoreboard
     st.markdown("<br>", unsafe_allow_html=True)
     head_c1, head_c2, head_c3 = st.columns([1, 6, 1])
-    with head_c1: 
-        st.image(st.session_state.away_logo, width=80)
+    with head_c1: st.image(st.session_state.away_logo, width=80)
     with head_c2:
         st.markdown(f"""
             <div style="display:flex;align-items:center;justify-content:center;font-weight:800;font-size:clamp(20px,3vw,32px);gap:15px;text-align:center;">
@@ -230,16 +231,14 @@ if st.session_state.view == "game":
                 <span>{st.session_state.home}</span>
             </div>
         """, unsafe_allow_html=True)
-    with head_c3: 
-        st.image(st.session_state.home_logo, width=80)
+    with head_c3: st.image(st.session_state.home_logo, width=80)
     st.divider()
 
-    # 4. Filter Section
+    # Filter Section
     raw_periods = list({p["period_label"] for p in plays})
     def p_key(l):
         if l.startswith('P'): return int(l[1:])
         if l == 'OT': return 100
-        if l.startswith('OT'): return 100 + int(l[2:])
         return 200
     all_periods = sorted(raw_periods, key=p_key)
 
@@ -251,12 +250,10 @@ if st.session_state.view == "game":
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
-            a_s, h_s = p.get("away_skaters", 5), p.get("home_skaters", 5)
-            a_g, h_g = p.get("away_g_in", True), p.get("home_g_in", True)
             if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: return False
-            if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
-            if USE_PP_FILTER and (a_s == h_s or not a_g or not h_g): return False
-            if USE_GP_FILTER and (a_g and h_g): return False
+            if USE_GOAL_FILTER and "Goal" not in p["type_text"]: return False
+            if USE_PP_FILTER and not p["is_pp"]: return False
+            if USE_GP_FILTER and not p["is_en"]: return False
             return True
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
@@ -266,14 +263,13 @@ if st.session_state.view == "game":
     st.info(f"Showing {len(display_list)} of {len(plays)} plays.")
 
     for p in display_list:
-        emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+        emoji = "🚨" if "Goal" in p.get("type_text") else p.get("emoji", "🏒")
         st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
         st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
         st.markdown(f"🎯 **Event:** {p.get('type_text')}")
-        st.markdown(f"⚖️ **Strength:** `{p.get('strength', '5v5')}`")
+        st.markdown(f"⚖️ **Strength:** `{p.get('strength')}`")
         st.markdown(f"📋 **Play:** {p.get('text')}")
-        if p.get("wall_et"):
-            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+        if p.get("wall_et"): st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
         st.divider()
 
 # ======================================================
@@ -321,8 +317,7 @@ else:
                 with st.container(border=True):
                     st.markdown(card_html, unsafe_allow_html=True)
                     btn_label = f"▶ Open {g['away_abbr']} @ {g['home_abbr']}" if has_started else "⏳ Not Started"
-                    tooltip = "" if has_started else "Data will be available once the game starts."
-                    if st.button(btn_label, key=f"btn_{g['event_id']}", use_container_width=True, disabled=not has_started, help=tooltip):
+                    if st.button(btn_label, key=f"btn_{g['event_id']}", use_container_width=True, disabled=not has_started):
                         st.session_state.update({
                             "view": "game", "event_id": g["event_id"],
                             "away": g["away_abbr"], "home": g["home_abbr"],
