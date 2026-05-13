@@ -1,7 +1,9 @@
 import streamlit as st
 import requests
-from datetime import datetime, date as ddate, timedelta, time as dtime
-from zoneinfo import ZoneInfo
+import pytz
+from datetime import datetime
+
+ET = pytz.timezone('US/Eastern')
 
 # =========================
 # PAGE CONFIG & TITLE
@@ -206,7 +208,7 @@ if st.session_state.view == "game":
     with nav_col2:
         if st.button("🔄 Refresh", use_container_width=True):
             st.session_state.cached_plays = None
-            st.session_state.last_refresh = datetime.now(ET)
+            # This triggers get_parsed_plays which updates last_refresh
             st.rerun()
     with nav_col3:
         if st.session_state.last_refresh:
@@ -215,15 +217,14 @@ if st.session_state.view == "game":
                     Last refresh {st.session_state.last_refresh.strftime("%H:%M:%S ET")}
                 </div>
             ''', unsafe_allow_html=True)
-            
+
     # 2. Fetch Data
     plays = get_parsed_plays(st.session_state.event_id)
     
     # 3. Header Scoreboard
     st.markdown("<br>", unsafe_allow_html=True)
     head_c1, head_c2, head_c3 = st.columns([1, 6, 1])
-    with head_c1: 
-        st.image(st.session_state.away_logo, width=80)
+    with head_c1: st.image(st.session_state.away_logo, width=80)
     with head_c2:
         st.markdown(f"""
             <div style="display:flex;align-items:center;justify-content:center;font-weight:800;font-size:clamp(20px,3vw,32px);gap:15px;text-align:center;">
@@ -234,11 +235,10 @@ if st.session_state.view == "game":
                 <span>{st.session_state.home}</span>
             </div>
         """, unsafe_allow_html=True)
-    with head_c3: 
-        st.image(st.session_state.home_logo, width=80)
+    with head_c3: st.image(st.session_state.home_logo, width=80)
     st.divider()
 
-    # 4. Filter Section (Ungrouped Layout)
+    # 4. Filters (Ungrouped)
     def period_sort_key(label):
         if label.startswith('P'):
             try: return int(label[1:])
@@ -253,9 +253,8 @@ if st.session_state.view == "game":
     raw_periods = list({p["period_label"] for p in plays})
     all_periods = sorted(raw_periods, key=period_sort_key)
 
-    # Individual Checkboxes
     USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
-    selected_periods = [] # Initialize as empty
+    selected_periods = []
     if USE_PERIOD_FILTER:
         selected_periods = st.multiselect("Select Periods", options=all_periods)
 
@@ -265,80 +264,47 @@ if st.session_state.view == "game":
         all_wall_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
         game_start_dt = min(all_wall_dts) if all_wall_dts else datetime.now(ET)
         game_end_dt   = max(all_wall_dts) if all_wall_dts else datetime.now(ET)
-
+        
         st.markdown("**Start date/time (ET)**")
         sc1, sc2 = st.columns(2)
-        with sc1:
-            start_date = st.date_input(
-                "Start date", 
-                value=game_start_dt.date(), 
-                key="sd",
-                format="YYYY-MM-DD" # <--- ADD THIS
-            )
-        with sc2:
-            start_time = st.time_input("Start time", value=game_start_dt.time(), key="st", step=60)
-
+        with sc1: start_date = st.date_input("Start date", value=game_start_dt.date(), key="sd", format="YYYY-MM-DD")
+        with sc2: start_time = st.time_input("Start time", value=game_start_dt.time(), key="st", step=60)
+        
         st.markdown("**End date/time (ET)**")
         ec1, ec2 = st.columns(2)
-        with ec1:
-            end_date = st.date_input(
-                "End date", 
-                value=game_end_dt.date(), 
-                key="ed",
-                format="YYYY-MM-DD" # <--- ADD THIS
-            )
-        with ec2:
-            end_time = st.time_input("End time", value=game_end_dt.time(), key="et", step=60)
+        with ec1: end_date = st.date_input("End date", value=game_end_dt.date(), key="ed", format="YYYY-MM-DD")
+        with ec2: end_time = st.time_input("End time", value=game_end_dt.time(), key="et", step=60)
         
         START_DT = datetime.combine(start_date, start_time).replace(tzinfo=ET)
         END_DT   = datetime.combine(end_date, end_time).replace(tzinfo=ET)
 
     USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
 
-    # --- THE FIX IS HERE ---
-    if st.button("🚀 Apply Filters"):
+    if st.button("🚀 Apply Filters", use_container_width=True):
         def passes(p):
-            # 1. Fixed Period Logic: Check if selection exists
             if USE_PERIOD_FILTER and selected_periods:
-                if p["period_label"] not in selected_periods:
-                    return False
-            
-            # 2. Time Logic
+                if p["period_label"] not in selected_periods: return False
             if USE_TIME_FILTER and START_DT and END_DT:
-                if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
-                    return False
-            
-            # 3. Goal Logic
-            if USE_GOAL_FILTER and p["type_text"] != "Goal":
-                return False
-                
+                if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT): return False
+            if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
             return True
 
-        # Re-run filter on every click
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
 
-    # 5. Display Banner Info
+    # 5. Rendering
     display_list = st.session_state.filtered_plays if st.session_state.filters_applied else plays
-    
-    if st.session_state.filters_applied:
-        st.info(f"Showing **{len(display_list)}** of **{len(plays)}** plays based on active filters.")
-
-    # 6. Render Play-by-Play Feed
-    if not display_list:
-        st.warning("No plays found for the selected filters.")
-    else:
-        for p in display_list:
-            emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
-            st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}")
-            st.markdown(f"🎯 **Event:** {p['type_text']}")
-            st.markdown(f"📋 **Play:** {p['text']}")
-            st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
-            if "situation" in p and p["situation"]:
-                st.markdown(f"⚖️ **Situation:** {p['situation']}")
-            if p["wall_et"]:
-                st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
-            st.divider()
+    for p in display_list:
+        emoji = "🚨" if p["type_text"] == "Goal" else p["emoji"]
+        st.subheader(f"{emoji} {p['period_label']} | ⏱️ {p['clock']}")
+        st.markdown(f"🎯 **Event:** {p['type_text']}")
+        st.markdown(f"📋 **Play:** {p['text']}")
+        st.markdown(f"📊 **Score:** {p['away_score']} - {p['home_score']}")
+        if "situation" in p and p["situation"]:
+            st.markdown(f"⚖️ **Situation:** {p['situation']}")
+        if p["wall_et"]:
+            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+        st.divider()
         
 # ======================================================
 # SCHEDULE VIEW
