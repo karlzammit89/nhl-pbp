@@ -233,25 +233,22 @@ if st.session_state.view == "game":
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
-            # Check Period filter
             if USE_PERIOD_FILTER and selected_periods:
                 if p["period_label"] not in selected_periods:
                     return False
             
-            # Check Time filter
+            # This now compares full Date + Time objects
             if USE_TIME_FILTER and START_DT and END_DT:
                 if not p["wall_dt"] or not (START_DT <= p["wall_dt"] <= END_DT):
                     return False
-            
-            # UPDATED: Direct link to Event Type "Goal"
+                    
             if USE_GOAL_FILTER and p["type_text"] != "Goal":
                 return False
-                
             return True
 
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
-
+        
     # Determine which list to render
     filters_applied = st.session_state.filters_applied
     filtered = st.session_state.filtered_plays if (filters_applied and st.session_state.filtered_plays is not None) else plays
