@@ -301,31 +301,111 @@ if st.session_state.view == "game":
 # SCHEDULE VIEW
 # ======================================================
 else:
-    date = st.date_input("Select date", st.session_state.sched_date)
+    # 1. Calendar Logic: Fix double-click using a callback
+    def handle_date_change():
+        st.session_state.sched_date = st.session_state.calendar_widget
+
+    # Display the calendar (Monday-start is handled by the JS at the top of the script)
+    date = st.date_input(
+        "Select date", 
+        value=st.session_state.sched_date,
+        key="calendar_widget",
+        on_change=handle_date_change
+    )
+
+    # 2. Update state and fetch games
     st.session_state.sched_date = date
     games = fetch_scoreboard(date.strftime("%Y-%m-%d"))
 
-    st.markdown("""<style>
-        .sched-team-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-        .sched-team-name { font-size: 22px; font-weight: 800; }
-        .sched-score { font-size: 22px; font-weight: 800; color: #aaa; margin-left: auto; }
-        .sched-meta { font-size: 13px; color: #999; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 5px; }
-        .sched-extra { background: #e67e22; color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-left: 6px; }
-    </style>""", unsafe_allow_html=True)
+    # 3. Dashboard Styling (NBA-style layout)
+    st.markdown("""
+        <style>
+            .sched-team-row { 
+                display: flex; 
+                align-items: center; 
+                gap: 12px; 
+                margin-bottom: 6px; 
+            }
+            .sched-team-name { 
+                font-size: 22px; 
+                font-weight: 800; 
+                color: #ffffff;
+            }
+            .sched-score { 
+                font-size: 22px; 
+                font-weight: 800; 
+                color: #888888; 
+                margin-left: auto; 
+            }
+            .sched-meta { 
+                font-size: 13px; 
+                color: #999999; 
+                border-top: 1px solid rgba(255,255,255,0.1); 
+                padding-top: 8px; 
+                margin-top: 8px;
+                display: flex;
+                align-items: center;
+            }
+            .sched-extra { 
+                background: #e67e22; 
+                color: #fff; 
+                font-size: 11px; 
+                padding: 2px 6px; 
+                border-radius: 4px; 
+                margin-left: 8px;
+                font-weight: bold;
+            }
+        </style>
+    """, unsafe_allow_html=True)
 
-    cols = st.columns(2)
-    for i, g in enumerate(games):
-        has_started = g["has_score"]
-        ot_badge = '<span class="sched-extra">OT</span>' if g["is_ot"] else ""
-        
-        card_html = f"""
-        <div class="sched-team-row"><img src="{g['away_logo']}" width="34"/><span class="sched-team-name">{g['away_abbr']}</span><span class="sched-score">{g['away_score'] if has_started else ''}</span></div>
-        <div class="sched-team-row"><img src="{g['home_logo']}" width="34"/><span class="sched-team-name">{g['home_abbr']}</span><span class="sched-score">{g['home_score'] if has_started else ''}</span></div>
-        <div class="sched-meta">{g['time_str']} &middot; {g['state_name']}{ot_badge}</div>
-        """
-        with cols[i % 2]:
-            with st.container(border=True):
-                st.markdown(card_html, unsafe_allow_html=True)
-                if st.button(f"▶ Open {g['away_abbr']} @ {g['home_abbr']}" if has_started else "⏳ Not Started", key=f"g_{g['event_id']}", use_container_width=True, disabled=not has_started):
-                    st.session_state.update({"view": "game", "event_id": g["event_id"], "away": g["away_abbr"], "home": g["home_abbr"], "away_logo": g["away_logo"], "home_logo": g["home_logo"], "away_score": g["away_score"], "home_score": g["home_score"], "game_state": g["state"]})
-                    st.rerun()
+    # 4. Render Game Cards in 2 columns
+    if not games:
+        st.info(f"No games scheduled for {date.strftime('%Y-%m-%d')}.")
+    else:
+        cols = st.columns(2)
+        for i, g in enumerate(games):
+            has_started = g["has_score"]
+            ot_badge = f'<span class="sched-extra">OT</span>' if g["is_ot"] else ""
+            
+            # HTML for the card content
+            card_html = f"""
+            <div class="sched-team-row">
+                <img src="{g['away_logo']}" width="34"/>
+                <span class="sched-team-name">{g['away_abbr']}</span>
+                <span class="sched-score">{g['away_score'] if has_started else ''}</span>
+            </div>
+            <div class="sched-team-row">
+                <img src="{g['home_logo']}" width="34"/>
+                <span class="sched-team-name">{g['home_abbr']}</span>
+                <span class="sched-score">{g['home_score'] if has_started else ''}</span>
+            </div>
+            <div class="sched-meta">
+                {g['time_str']} &middot; {g['state_name']}{ot_badge}
+            </div>
+            """
+            
+            with cols[i % 2]:
+                with st.container(border=True):
+                    st.markdown(card_html, unsafe_allow_html=True)
+                    
+                    # Button logic (NBA-style: disabled if game hasn't started)
+                    btn_label = f"▶ Open {g['away_abbr']} @ {g['home_abbr']}" if has_started else "⏳ Not Started"
+                    
+                    if st.button(btn_label, key=f"btn_{g['event_id']}", use_container_width=True, disabled=not has_started):
+                        # Set all necessary states to switch to Game Feed view
+                        st.session_state.update({
+                            "view": "game",
+                            "event_id": g["event_id"],
+                            "away": g["away_abbr"],
+                            "home": g["home_abbr"],
+                            "away_logo": g["away_logo"],
+                            "home_logo": g["home_logo"],
+                            "away_score": g["away_score"],
+                            "home_score": g["home_score"],
+                            "game_state": g["state"],
+                            "filters_applied": False,
+                            "filtered_plays": None,
+                            "cached_plays": None,
+                            "cached_event_id": None
+                        })
+                        st.rerun()
