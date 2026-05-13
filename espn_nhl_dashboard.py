@@ -129,101 +129,70 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
-    """
-    Fetches and parses play-by-play data with a focus on color-coded 
-    strength badges derived from the 4-digit situationCode.
-    """
-    # Update timestamp whenever data is fetched
     st.session_state.last_refresh = datetime.now(ET)
     
-    # Return cached data if available for this event
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
         return st.session_state.cached_plays
     
     try:
         resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-        raw_plays = data.get("plays", [])
+        raw_plays = resp.json().get("plays", [])
     except Exception as e:
-        st.error(f"Error fetching game data: {e}")
+        st.error(f"API Connection Error: {e}")
         return []
 
     plays = []
     for p in raw_plays:
-        text = p.get("text", "")
         sit = p.get("situation", {})
-        # [AwayGoalie][AwaySkaters][HomeSkaters][HomeGoalie]
+        # The 4-digit code: [AwayG][AwayS][HomeS][HomeG]
         sit_code = str(sit.get("situationCode", ""))
         
-        # Default starting state
-        away_s, home_s = 5, 5
-        away_g_in, home_g_in = True, True
+        # If the API provides no situation data, we default to 5v5 
+        # but ONLY as a last resort if sit_code is missing.
+        a_g, a_s, h_s, h_g = 1, 5, 5, 1 
 
-        # 1. PRIMARY LOGIC: Parse the 4-digit situationCode
         if len(sit_code) == 4:
-            away_g_in = (sit_code[0] == '1')
-            away_s    = int(sit_code[1])
-            home_s    = int(sit_code[2])
-            home_g_in = (sit_code[3] == '1')
-        elif sit.get("awaySkaters") is not None:
-            away_s = sit.get("awaySkaters")
-            home_s = sit.get("homeSkaters")
-
-        # 2. DEFINE STRENGTH LABEL & COLORING
-        # Default: Even Strength (Gray)
-        bg_color = "#34495e" 
-        strength_label = f"{away_s}v{home_s}"
+            a_g = int(sit_code[0])
+            a_s = int(sit_code[1])
+            h_s = int(sit_code[2])
+            h_g = int(sit_code[3])
         
-        # Keyword checks for extra safety
-        lower_text = text.lower()
-        is_pp_keyword = "power play" in lower_text or "ppg" in lower_text
-        is_en_keyword = "empty net" in lower_text
+        # 1. Determine Label
+        label = f"{a_s}v{h_s}"
+        
+        # 2. Determine Style (Empty Net vs PP vs Regular)
+        bg_color = "#34495e" # Regular (Gray)
+        
+        if a_g == 0:
+            label += " (Away EN)"
+            bg_color = "#e67e22" # Orange
+        elif h_g == 0:
+            label += " (Home EN)"
+            bg_color = "#e67e22" # Orange
+        elif a_s != h_s:
+            label += " (PP)"
+            bg_color = "#2980b9" # Blue
 
-        if not away_g_in or not home_g_in or is_en_keyword:
-            bg_color = "#e67e22" # Orange for Empty Net
-            if not away_g_in: strength_label += " (Away EN)"
-            elif not home_g_in: strength_label += " (Home EN)"
-            else: strength_label += " (EN)"
-        elif away_s != home_s or is_pp_keyword:
-            bg_color = "#2980b9" # Blue for Power Play
-            strength_label += " (PP)"
-
-        # Generate HTML Badge for the UI
         strength_html = f"""
-            <span style="
-                background-color: {bg_color};
-                color: white;
-                padding: 2px 10px;
-                border-radius: 10px;
-                font-size: 0.85rem;
-                font-weight: 600;
-                display: inline-block;
-                border: 1px solid rgba(255,255,255,0.1);
-            ">
-                {strength_label}
+            <span style="background:{bg_color}; color:white; padding:2px 10px; 
+            border-radius:10px; font-size:12px; font-weight:bold; display:inline-block;">
+                {label}
             </span>
         """
 
         plays.append({
             "seq": int(p.get("sequenceNumber", 0)),
-            "period_label": period_label(
-                p.get("period", {}).get("number", 1), 
-                p.get("period", {}).get("type", "")
-            ),
+            "period_label": period_label(p.get("period", {}).get("number", 1)),
             "clock": p.get("clock", {}).get("displayValue", ""),
             "type_text": p.get("type", {}).get("text", ""),
-            "text": text,
-            "strength": strength_label,      # For filtering
-            "strength_html": strength_html,  # For display
-            "away_skaters": away_s,
-            "home_skaters": home_s,
-            "away_g_in": away_g_in,
-            "home_g_in": home_g_in,
-            "wall_et": fmt_et_full(p.get("wallclock", "")),
+            "text": p.get("text", ""),
+            "strength": label, # For filtering
+            "strength_html": strength_html, # For display
             "away_score": p.get("awayScore", 0),
             "home_score": p.get("homeScore", 0),
-            "emoji": get_play_emoji(text),
+            "emoji": get_play_emoji(p.get("text", "")),
+            "wall_et": fmt_et_full(p.get("wallclock", ""))
         })
     
     plays.sort(key=lambda x: x["seq"])
@@ -313,7 +282,7 @@ if st.session_state.view == "game":
         st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
         st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
         st.markdown(f"🎯 **Event:** {p.get('type_text')}")
-        st.markdown(f"⚖️ **Strength:** {p.get('strength_html')}", unsafe_allow_html=True)
+        st.markdown(f"⚖️ Strength: {p.get('strength_html')}", unsafe_allow_html=True)
         st.markdown(f"📋 **Play:** {p.get('text')}")
         if p.get("wall_et"):
             st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
