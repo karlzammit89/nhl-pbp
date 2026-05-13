@@ -50,7 +50,7 @@ for k, v in {
     "filtered_plays": None,
     "cached_plays": None,
     "cached_event_id": None,
-    "last_refresh": datetime.now(ET),
+    "last_refresh": datetime.now(ET), # Initialized to show on launch
     "sched_date": ddate.today(),
 }.items():
     if k not in st.session_state:
@@ -129,6 +129,7 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 def get_parsed_plays(event_id: str) -> list:
+    # Update timestamp whenever data is fetched
     st.session_state.last_refresh = datetime.now(ET)
     
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
@@ -191,6 +192,7 @@ def get_parsed_plays(event_id: str) -> list:
 # GAME FEED VIEW
 # ======================================================
 if st.session_state.view == "game":
+    # 1. Navigation & Refresh Bar
     plays = get_parsed_plays(st.session_state.event_id)
     
     nav_col1, nav_col2, nav_col3, _ = st.columns([1.3, 1, 1.8, 5.9])
@@ -205,6 +207,7 @@ if st.session_state.view == "game":
             st.session_state.cached_plays = None
             st.rerun()
     with nav_col3:
+        # Last refresh is now guaranteed to have a value from session_state init
         refresh_time = st.session_state.last_refresh.strftime("%H:%M:%S ET")
         st.markdown(f'''
             <div style="background-color:#2e7d32;color:white;padding:8px 16px;border-radius:4px;font-size:14px;font-weight:bold;text-align:center;">
@@ -212,10 +215,11 @@ if st.session_state.view == "game":
             </div>
         ''', unsafe_allow_html=True)
             
-    # Header Scoreboard
+    # 3. Header Scoreboard
     st.markdown("<br>", unsafe_allow_html=True)
     head_c1, head_c2, head_c3 = st.columns([1, 6, 1])
-    with head_c1: st.image(st.session_state.away_logo, width=80)
+    with head_c1: 
+        st.image(st.session_state.away_logo, width=80)
     with head_c2:
         st.markdown(f"""
             <div style="display:flex;align-items:center;justify-content:center;font-weight:800;font-size:clamp(20px,3vw,32px);gap:15px;text-align:center;">
@@ -226,74 +230,140 @@ if st.session_state.view == "game":
                 <span>{st.session_state.home}</span>
             </div>
         """, unsafe_allow_html=True)
-    with head_c3: st.image(st.session_state.home_logo, width=80)
+    with head_c3: 
+        st.image(st.session_state.home_logo, width=80)
     st.divider()
 
-    # Filter UI Section
-    USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
-    raw_periods = sorted(list({p["period_label"] for p in plays}))
-    selected_periods = st.multiselect("Select Periods", options=raw_periods) if USE_PERIOD_FILTER else []
+    # 4. Filter Section
+    raw_periods = list({p["period_label"] for p in plays})
+    def p_key(l):
+        if l.startswith('P'): return int(l[1:])
+        if l == 'OT': return 100
+        if l.startswith('OT'): return 100 + int(l[2:])
+        return 200
+    all_periods = sorted(raw_periods, key=p_key)
 
-    USE_GOAL_FILTER = st.checkbox("🚨 Filter by Goals", value=False)
-    USE_PP_FILTER = st.checkbox("⚡ Filter by Power Plays", value=False)
-    USE_GP_FILTER = st.checkbox("🥅 Filter by Empty Nets", value=False)
+    # Filter by Actual Time Defaults
+    all_dts = [p["wall_dt"] for p in plays if p["wall_dt"]]
+    game_start_default = min(all_dts) if all_dts else None
+    game_end_default   = max(all_dts) if all_dts else None
+
+    USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False)
+    selected_periods = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
+    
+    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
+    START_DT = END_DT = None
+    if USE_TIME_FILTER:
+        def_start_date = game_start_default.date() if game_start_default else ddate.today()
+        def_end_date   = game_end_default.date()   if game_end_default   else ddate.today()
+        def_start_time = game_start_default.time() if game_start_default else dtime(19, 0)
+        def_end_time   = game_end_default.time()   if game_end_default   else dtime(23, 59)
+
+        st.markdown("**Start date/time (ET)**")
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            start_date_input = st.date_input("Start date", value=def_start_date, key="tf_start_date")
+        with sc2:
+            start_time_input = st.time_input("Start time", value=def_start_time, step=60, key="tf_start_time")
+
+        st.markdown("**End date/time (ET)**")
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            end_date_input = st.date_input("End date", value=def_end_date, key="tf_end_date")
+        with ec2:
+            end_time_input = st.time_input("End time", value=def_end_time, step=60, key="tf_end_time")
+
+        START_DT = datetime.combine(start_date_input, start_time_input).replace(tzinfo=ET)
+        END_DT   = datetime.combine(end_date_input,   end_time_input).replace(tzinfo=ET)
+
+    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
+    USE_PP_FILTER = st.checkbox("🏒 Power Plays", value=False)
+    USE_GP_FILTER = st.checkbox("🥅 Goalie Pulled", value=False)
 
     if st.button("🚀 Apply Filters"):
         def passes(p):
             a_s, h_s = p.get("away_skaters", 5), p.get("home_skaters", 5)
             a_g, h_g = p.get("away_g_in", True), p.get("home_g_in", True)
+            
             if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods: return False
+            if USE_TIME_FILTER:
+                if not p["wall_dt"] or START_DT is None or END_DT is None: return False
+                if not (START_DT <= p["wall_dt"] <= END_DT): return False
             if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
-            if USE_PP_FILTER and (a_s == h_s): return False
+            if USE_PP_FILTER and (a_s == h_s or not a_g or not h_g): return False
             if USE_GP_FILTER and (a_g and h_g): return False
             return True
         st.session_state.filtered_plays = [p for p in plays if passes(p)]
         st.session_state.filters_applied = True
         st.rerun()
         
-    # Info Banners
-    display_list = st.session_state.filtered_plays if st.session_state.filters_applied else plays
-    total, showing = len(plays), len(display_list)
-
-    if st.session_state.filters_applied:
-        if USE_PERIOD_FILTER:
-            st.info(f"🏒 **Period filter:** {', '.join(selected_periods)} — showing **{showing}** of **{total}** plays")
-        if USE_GOAL_FILTER:
-            n_goals = sum(1 for p in plays if p["type_text"] == "Goal")
-            st.info(f"🚨 **Goals Only filter:** {n_goals} scoring play(s) in game — showing **{showing}** of **{total}** plays")
-        if USE_PP_FILTER:
-            st.info(f"⚡ **Power Plays filter:** showing **{showing}** of **{total}** plays")
-        if USE_GP_FILTER:
-            st.info(f"🥅 **Empty Nets filter:** showing **{showing}** of **{total}** plays")
+    display_list = st.session_state.filtered_plays if st.session_state.get("filters_applied") else plays
+    st.info(f"Showing {len(display_list)} of {len(plays)} plays.")
 
     for p in display_list:
         emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
         st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
-        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')} | ⚖️ **Strength:** `{p.get('strength', '5v5')}`")
+        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+        st.markdown(f"🎯 **Event:** {p.get('type_text')}")
+        st.markdown(f"⚖️ **Strength:** `{p.get('strength', '5v5')}`")
         st.markdown(f"📋 **Play:** {p.get('text')}")
+        if p.get("wall_et"):
+            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
         st.divider()
 
 # ======================================================
 # SCHEDULE VIEW
 # ======================================================
 else:
-    date = st.date_input("Select date", value=st.session_state.sched_date)
-    games = fetch_scoreboard(date.strftime("%Y-%m-%d"))
+    def handle_date_change():
+        st.session_state.sched_date = st.session_state.calendar_widget
+
+    date = st.date_input("Select date", value=st.session_state.sched_date, key="calendar_widget", on_change=handle_date_change)
+    formatted_date = date.strftime("%Y-%m-%d")
+    games = fetch_scoreboard(formatted_date)
+
+    st.markdown("""
+        <style>
+            .sched-team-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+            .sched-team-name { font-size: 22px; font-weight: 800; color: #ffffff; }
+            .sched-score { font-size: 22px; font-weight: 800; color: #888888; margin-left: auto; }
+            .sched-meta { font-size: 13px; color: #999999; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px; margin-top: 8px; display: flex; align-items: center; }
+            .sched-extra { background: #e67e22; color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-weight: bold; }
+        </style>
+    """, unsafe_allow_html=True)
+
     if not games:
-        st.info(f"No games scheduled for {date}.")
+        st.info(f"No games scheduled for {formatted_date}.")
     else:
         cols = st.columns(2)
         for i, g in enumerate(games):
+            has_started = g["has_score"]
+            ot_badge = f'<span class="sched-extra">OT</span>' if g["is_ot"] else ""
+            card_html = f"""
+            <div class="sched-team-row">
+                <img src="{g['away_logo']}" width="34"/>
+                <span class="sched-team-name">{g['away_abbr']}</span>
+                <span class="sched-score">{g['away_score'] if has_started else ''}</span>
+            </div>
+            <div class="sched-team-row">
+                <img src="{g['home_logo']}" width="34"/>
+                <span class="sched-team-name">{g['home_abbr']}</span>
+                <span class="sched-score">{g['home_score'] if has_started else ''}</span>
+            </div>
+            <div class="sched-meta">{g['time_str']} &middot; {g['state_name']}{ot_badge}</div>
+            """
             with cols[i % 2]:
                 with st.container(border=True):
-                    st.write(f"**{g['away_abbr']} @ {g['home_abbr']}**")
-                    st.write(f"Status: {g['state_name']} | Score: {g['away_score']}-{g['home_score']}")
-                    if st.button(f"Open Game {g['event_id']}", key=g['event_id']):
+                    st.markdown(card_html, unsafe_allow_html=True)
+                    btn_label = f"▶ Open {g['away_abbr']} @ {g['home_abbr']}" if has_started else "⏳ Not Started"
+                    tooltip = "" if has_started else "Data will be available once the game starts."
+                    if st.button(btn_label, key=f"btn_{g['event_id']}", use_container_width=True, disabled=not has_started, help=tooltip):
                         st.session_state.update({
                             "view": "game", "event_id": g["event_id"],
                             "away": g["away_abbr"], "home": g["home_abbr"],
                             "away_logo": g["away_logo"], "home_logo": g["home_logo"],
                             "away_score": g["away_score"], "home_score": g["home_score"],
-                            "filters_applied": False, "cached_plays": None
+                            "game_state": g["state"], "filters_applied": False,
+                            "filtered_plays": None, "cached_plays": None, "cached_event_id": None
                         })
                         st.rerun()
