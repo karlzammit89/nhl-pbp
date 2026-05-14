@@ -706,10 +706,11 @@ if st.session_state.view == "game":
     game_start_default = min(all_dts) if all_dts else None
     game_end_default   = max(all_dts) if all_dts else None
 
-    USE_PERIOD_FILTER  = st.checkbox("🏒 Filter by Period", value=False)
+    # ── Filter Inputs with Keys ──────────────────────────────────────────
+    USE_PERIOD_FILTER  = st.checkbox("🏒 Filter by Period", value=False, key="cb_period")
     selected_periods   = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
 
-    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
+    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False, key="cb_time")
     START_DT = END_DT = None
     if USE_TIME_FILTER:
         def_start_date = game_start_default.date() if game_start_default else ddate.today()
@@ -731,31 +732,50 @@ if st.session_state.view == "game":
         START_DT = datetime.combine(start_date_input, start_time_input).replace(tzinfo=ET)
         END_DT   = datetime.combine(end_date_input,   end_time_input).replace(tzinfo=ET)
 
-    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
-    USE_PP_FILTER   = st.checkbox("⚡ Power Plays Only", value=False)
-    USE_GP_FILTER   = st.checkbox("🥅 Empty Nets Only", value=False)
+    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False, key="cb_goals")
+    USE_PP_FILTER   = st.checkbox("⚡ Power Plays Only", value=False, key="cb_pp")
+    USE_GP_FILTER   = st.checkbox("🥅 Empty Nets Only", value=False, key="cb_en")
 
-    if st.button("🚀 Apply Filters"):
-        def passes(p):
-            sit = p.get("situation", "")
-            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
-                return False
-            if USE_TIME_FILTER:
-                if not p["wall_dt"] or START_DT is None or END_DT is None:
-                    return False
-                if not (START_DT <= p["wall_dt"] <= END_DT):
-                    return False
-            if USE_GOAL_FILTER and p["type_text"] != "Goal":
-                return False
-            if USE_PP_FILTER and "PP" not in sit:
-                return False
-            if USE_GP_FILTER and "EN" not in sit:
-                return False
-            return True
-        st.session_state.filtered_plays  = [p for p in plays if passes(p)]
-        st.session_state.filters_applied = True
-        st.rerun()
+    # ── Action Buttons ──────────────────────────────────────────────────
+    btn_col1, btn_col2, _ = st.columns([1.5, 1.5, 7])
 
+    with btn_col1:
+        if st.button("🚀 Apply Filters", use_container_width=True):
+            def passes(p):
+                sit = p.get("situation", "")
+                if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
+                    return False
+                if USE_TIME_FILTER:
+                    if not p["wall_dt"] or START_DT is None or END_DT is None:
+                        return False
+                    if not (START_DT <= p["wall_dt"] <= END_DT):
+                        return False
+                if USE_GOAL_FILTER and p["type_text"] != "Goal":
+                    return False
+                if USE_PP_FILTER and "PP" not in sit:
+                    return False
+                if USE_GP_FILTER and "EN" not in sit:
+                    return False
+                return True
+            st.session_state.filtered_plays  = [p for p in plays if passes(p)]
+            st.session_state.filters_applied = True
+            st.rerun()
+
+    with btn_col2:
+        def reset_filters():
+            # Clear filter results
+            st.session_state.filters_applied = False
+            st.session_state.filtered_plays = None
+            # Reset checkbox states
+            st.session_state.cb_period = False
+            st.session_state.cb_time = False
+            st.session_state.cb_goals = False
+            st.session_state.cb_pp = False
+            st.session_state.cb_en = False
+
+        st.button("🗑️ Remove Filters", use_container_width=True, on_click=reset_filters)
+
+    # ── Display Logic ────────────────────────────────────────────────────
     filters_applied = st.session_state.get("filters_applied")
     display_list    = st.session_state.filtered_plays if filters_applied else plays
     total   = len(plays)
@@ -778,7 +798,7 @@ if st.session_state.view == "game":
         if USE_GP_FILTER:
             st.info(f"🥅 **Empty Nets Only filter:** showing **{showing}** of **{total}** plays")
 
-    # ── Render plays ──────────────────────────────────────────────────────
+    # ── Render Plays ──────────────────────────────────────────────────────
     for p in display_list:
         emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
         st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
