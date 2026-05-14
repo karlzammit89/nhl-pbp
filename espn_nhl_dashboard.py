@@ -377,38 +377,38 @@ def build_situation_windows(nhl_plays: list) -> list:
 
 def find_nhl_situation(espn_play: dict, nhl_plays: list, windows: list) -> str:
     """
-    Find situation for an ESPN play using:
-    1. Window lookup — which situation window does this elapsed time fall in?
-    2. Fuzzy event match fallback — if no window matches.
+    Find the on-ice situation for an ESPN play.
+
+    Primary: window lookup — find which situation window the ESPN play's
+    elapsed time falls in. Windows are half-open [start, end).
+
+    Fallback: if no window matches (gap between windows), find the nearest
+    window within FUZZY_SECONDS and use its situation. This handles the
+    brief micro-transitions logged in the NHL API.
     """
-    if not nhl_plays and not windows:
+    if not windows:
         return ""
 
-    period  = espn_play.get("period_num", 1)
     elapsed = espn_play.get("elapsed", 0)
 
-    # Strategy 1: window lookup (half-open interval)
+    # Primary: find the window covering this elapsed time
     for (w_start, w_end, w_sit) in windows:
         if w_start <= elapsed < w_end:
             return w_sit
-    # Include the final window (closed at end)
-    if windows:
-        last = windows[-1]
-        if elapsed >= last[0]:
-            return last[2]
 
-    # Strategy 2: fuzzy event match fallback
-    nhl_types  = espn_type_to_nhl(espn_play.get("type_text", ""))
-    candidates = [
-        p for p in nhl_plays
-        if p["period"] == period
-        and abs(p["elapsed"] - elapsed) <= FUZZY_SECONDS
-    ]
-    if not candidates:
-        return ""
-    type_matches = [p for p in candidates if p["type_key"] in nhl_types] if nhl_types else []
-    best = type_matches[0] if type_matches else candidates[0]
-    return best["situation"]
+    # Final window check (closed end)
+    if windows and elapsed >= windows[-1][0]:
+        return windows[-1][2]
+
+    # Fallback: find nearest window within FUZZY_SECONDS
+    best     = None
+    best_gap = FUZZY_SECONDS + 1
+    for (w_start, w_end, w_sit) in windows:
+        gap = min(abs(elapsed - w_start), abs(elapsed - w_end))
+        if gap < best_gap:
+            best_gap = gap
+            best     = w_sit
+    return best or ""
 
 # =========================
 # ESPN SCOREBOARD
@@ -617,21 +617,6 @@ if st.session_state.view == "game":
         st.caption(f"📡 ESPN wallclock + NHL situation codes (NHL game `{nhl_id}`)")
     else:
         st.caption("📡 ESPN wallclock only — NHL game ID not found, situation unavailable")
-
-    # ── Debug expander ─────────────────────────────────────────────────────
-    with st.expander("🔍 Debug — clock mapping & situation windows", expanded=False):
-        nhl_plays_debug = fetch_nhl_plays(st.session_state.nhl_game_id or "")
-        windows_debug   = build_situation_windows(nhl_plays_debug)
-
-        st.markdown("**ESPN plays P1 00:00–05:00 (showing elapsed and situation):**")
-        for p in plays:
-            if p["period_num"] == 1 and 0 <= p["elapsed"] <= 300:
-                st.write(f"  seq={p['seq']} clock=`{p['clock']}` elapsed={p['elapsed']}s sit=`{p['situation'] or '(none)'}`")
-
-        st.markdown("**PP windows from NHL API (merged):**")
-        pp_wins = [(s,e,sit) for s,e,sit in windows_debug if "PP" in sit]
-        for s,e,sit in pp_wins[:20]:
-            st.write(f"  [{s:4d}s – {min(e,9999):4d}s]  `{sit}`")
 
     st.divider()
 
