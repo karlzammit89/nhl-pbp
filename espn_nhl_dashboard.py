@@ -6,8 +6,8 @@ from zoneinfo import ZoneInfo
 # =========================
 # PAGE CONFIG & TITLE
 # =========================
-st.set_page_config(page_title="NHL Live", page_icon="🏒", layout="wide")
-st.title("🏒 NHL Dashboard")
+st.set_page_config(page_title="NHL Play by Play", page_icon="🏒", layout="wide")
+st.title("🏒 NHL Play by Play")
 
 st.components.v1.html("""
 <script>
@@ -376,24 +376,29 @@ def build_situation_windows(nhl_plays: list) -> list:
     # NHL Rule: a power play REQUIRES a penalty. No penalty = no PP.
     # Two checks applied to every PP window:
     #
-    # Check A — Minimum duration (5 seconds):
-    #   Any PP window under 5 seconds is a zero-duration API artifact.
-    #   We use 5s (not 30s) because legitimate situation code micro-transitions
-    #   during a 5-minute major can create valid sub-windows of 10-20 seconds
-    #   (e.g. after a PP goal the sit code briefly changes then returns to PP
-    #   for the remaining time on a 5-minute major).
+    # Check A — Minimum duration (30 seconds):
+    #   Real penalties are 2 minutes minimum. A PP window under 30 seconds
+    #   is almost certainly a data artifact from the NHL API. Discard it.
+    #   (30s chosen conservatively — even quick offsetting penalties leave
+    #    at least 30s of PP before becoming 4v4)
     #
-    # Check B — Penalty validation (within 360 seconds = 6 min lookback):
-    #   Every PP/EN+PP window must have a penalty play logged within 360 seconds
-    #   before OR 60 seconds after the window starts.
-    #   360s chosen to cover 5-minute majors (300s) with a 60s buffer for the
-    #   faceoff delay between penalty call and PP start.
-    #   The lookahead of 60s handles carry-over PPs at period boundaries.
+    # Check B — Penalty validation (within 300 seconds = 5 min max penalty):
+    #   Every PP window must have a penalty play logged in the NHL data
+    #   within 300 seconds before the window starts. If no penalty exists,
+    #   the NHL API reported a false situation code. Downgrade to 5v5.
+    #   Exception: carry-over PPs from a previous period — these are valid
+    #   even if the penalty was logged >300s ago in absolute game time,
+    #   because the period boundary resets the lookup window. We handle this
+    #   by also checking within 60s AFTER the window start (for period-starts
+    #   where the penalty was logged in the new period's opening plays).
+    #
+    # EN windows are NOT validated — a team can pull their goalie any time,
+    # no penalty required.
 
-    MIN_PP_DURATION    = 5    # seconds — only drop near-zero API artifacts
-    MAX_PENALTY_LOOKBACK = 360  # seconds — covers 5-min majors + faceoff delay
+    MIN_PP_DURATION = 30    # seconds — discard PP windows shorter than this
+    MAX_PENALTY_LOOKBACK = 300  # seconds — max time to look back for a penalty
 
-    # Build sorted list of all penalty elapsed times for fast lookup
+    # Build a sorted list of all penalty elapsed times for fast lookup
     penalty_elapsed_times = sorted([
         p["elapsed"] for p in sorted_plays
         if p.get("type_key", "") in ("penalty", "delayed-penalty")
@@ -402,7 +407,8 @@ def build_situation_windows(nhl_plays: list) -> list:
     def has_valid_penalty(win_start: int, win_end: int) -> bool:
         """
         Returns True if a penalty exists that could have caused this PP window.
-        Looks back MAX_PENALTY_LOOKBACK seconds and forward 60 seconds.
+        Looks back up to MAX_PENALTY_LOOKBACK seconds before the window start,
+        and also forward up to 60 seconds (for carry-over PPs logged at period start).
         """
         lookback_start = win_start - MAX_PENALTY_LOOKBACK
         lookahead_end  = win_start + 60
@@ -416,16 +422,17 @@ def build_situation_windows(nhl_plays: list) -> list:
         w_start, w_end, w_sit = w
         duration = w_end - w_start if w_end < 99999 else 9999
 
-        is_pp = "PP" in w_sit   # includes EN+PP situations
+        is_pp = "PP" in w_sit and "EN" not in w_sit  # pure PP, not EN+PP
+        is_en = "EN" in w_sit                          # EN (with or without PP)
 
-        if is_pp:
-            # Check A: drop only near-zero API artifacts
+        if is_pp and not is_en:
+            # Check A: minimum duration
             if duration < MIN_PP_DURATION:
-                validated.append([w_start, w_end, w_sit.replace(" PP", "").strip() or "5v5"])
+                validated.append([w_start, w_end, "5v5"])
                 continue
             # Check B: must have a causative penalty
             if not has_valid_penalty(w_start, w_end):
-                validated.append([w_start, w_end, w_sit.replace(" PP", "").strip() or "5v5"])
+                validated.append([w_start, w_end, "5v5"])
                 continue
 
         validated.append(list(w))
@@ -680,9 +687,9 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     if nhl_id:
-        st.caption(f"📡 ESPN wallclock + NHL situation codes (NHL game `{nhl_id}`)")
+        st.caption(f"📡 NHL Game ID `{nhl_id}`")
     else:
-        st.caption("📡 ESPN wallclock only — NHL game ID not found, situation unavailable")
+        st.caption("📡 NHL Game ID Not Found, PP & EN Unavailable")
 
     st.divider()
 
@@ -699,10 +706,11 @@ if st.session_state.view == "game":
     game_start_default = min(all_dts) if all_dts else None
     game_end_default   = max(all_dts) if all_dts else None
 
-    USE_PERIOD_FILTER  = st.checkbox("🏒 Filter by Period", value=False)
+    # ── Filter Inputs with Keys ──────────────────────────────────────────
+    USE_PERIOD_FILTER  = st.checkbox("🏒 Filter by Period", value=False, key="cb_period")
     selected_periods   = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
 
-    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
+    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False, key="cb_time")
     START_DT = END_DT = None
     if USE_TIME_FILTER:
         def_start_date = game_start_default.date() if game_start_default else ddate.today()
@@ -724,31 +732,50 @@ if st.session_state.view == "game":
         START_DT = datetime.combine(start_date_input, start_time_input).replace(tzinfo=ET)
         END_DT   = datetime.combine(end_date_input,   end_time_input).replace(tzinfo=ET)
 
-    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
-    USE_PP_FILTER   = st.checkbox("⚡ Power Plays Only", value=False)
-    USE_GP_FILTER   = st.checkbox("🥅 Empty Nets Only", value=False)
+    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False, key="cb_goals")
+    USE_PP_FILTER   = st.checkbox("⚡ Power Plays Only", value=False, key="cb_pp")
+    USE_GP_FILTER   = st.checkbox("🥅 Empty Nets Only", value=False, key="cb_en")
 
-    if st.button("🚀 Apply Filters"):
-        def passes(p):
-            sit = p.get("situation", "")
-            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
-                return False
-            if USE_TIME_FILTER:
-                if not p["wall_dt"] or START_DT is None or END_DT is None:
-                    return False
-                if not (START_DT <= p["wall_dt"] <= END_DT):
-                    return False
-            if USE_GOAL_FILTER and p["type_text"] != "Goal":
-                return False
-            if USE_PP_FILTER and "PP" not in sit:
-                return False
-            if USE_GP_FILTER and "EN" not in sit:
-                return False
-            return True
-        st.session_state.filtered_plays  = [p for p in plays if passes(p)]
-        st.session_state.filters_applied = True
-        st.rerun()
+    # ── Action Buttons ──────────────────────────────────────────────────
+    btn_col1, btn_col2, _ = st.columns([1.5, 1.5, 7])
 
+    with btn_col1:
+        if st.button("🚀 Apply Filters", use_container_width=True):
+            def passes(p):
+                sit = p.get("situation", "")
+                if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
+                    return False
+                if USE_TIME_FILTER:
+                    if not p["wall_dt"] or START_DT is None or END_DT is None:
+                        return False
+                    if not (START_DT <= p["wall_dt"] <= END_DT):
+                        return False
+                if USE_GOAL_FILTER and p["type_text"] != "Goal":
+                    return False
+                if USE_PP_FILTER and "PP" not in sit:
+                    return False
+                if USE_GP_FILTER and "EN" not in sit:
+                    return False
+                return True
+            st.session_state.filtered_plays  = [p for p in plays if passes(p)]
+            st.session_state.filters_applied = True
+            st.rerun()
+
+    with btn_col2:
+        def reset_filters():
+            # Clear filter results
+            st.session_state.filters_applied = False
+            st.session_state.filtered_plays = None
+            # Reset checkbox states
+            st.session_state.cb_period = False
+            st.session_state.cb_time = False
+            st.session_state.cb_goals = False
+            st.session_state.cb_pp = False
+            st.session_state.cb_en = False
+
+        st.button("🗑️ Remove Filters", use_container_width=True, on_click=reset_filters)
+
+    # ── Display Logic ────────────────────────────────────────────────────
     filters_applied = st.session_state.get("filters_applied")
     display_list    = st.session_state.filtered_plays if filters_applied else plays
     total   = len(plays)
@@ -771,7 +798,7 @@ if st.session_state.view == "game":
         if USE_GP_FILTER:
             st.info(f"🥅 **Empty Nets Only filter:** showing **{showing}** of **{total}** plays")
 
-    # ── Render plays ──────────────────────────────────────────────────────
+    # ── Render Plays ──────────────────────────────────────────────────────
     for p in display_list:
         emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
         st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
