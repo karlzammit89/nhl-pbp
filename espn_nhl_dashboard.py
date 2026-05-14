@@ -293,19 +293,15 @@ def build_situation_windows(nhl_plays: list) -> list:
     """
     Build gapless situation windows covering every second of the game.
 
-    NHL Rule: the power play (man advantage) starts at the FACEOFF after
-    the penalty, NOT when the penalty is called. The penalty clock also
-    starts at the faceoff. The NHL API correctly reflects this — the
-    situationCode changes to '1451'/'1541' on the faceoff play, not on
-    the penalty play itself.
+    NHL Rule: the power play starts at the FACEOFF after the penalty,
+    not when the penalty is called. The NHL API correctly reflects this —
+    situationCode changes to '1451'/'1541' on the faceoff, not the penalty.
+    We trust the NHL API situationCode exactly as logged.
 
-    Therefore we trust the NHL API's situationCode exactly as logged.
-    We do NOT back-date windows to penalty time.
-
-    What we DO handle:
-    - Period-boundary carry-overs (period-start has wrong sit code)
-    - Fragmented micro-windows from same-elapsed-second transitions
-    - Merging adjacent windows with identical situations
+    Three phases:
+    1. Build raw windows from every play (gapless coverage)
+    2. Patch period-start windows for carry-over PPs
+    3. Merge adjacent same-situation windows (eliminates fragmentation)
     """
     if not nhl_plays:
         return []
@@ -321,7 +317,7 @@ def build_situation_windows(nhl_plays: list) -> list:
         key=lambda p: (p["period"], p["elapsed"], p["sort_order"])
     )
 
-    # ── Phase 1: build raw gapless windows from every play ────────────────
+    # ── Phase 1: raw gapless windows ──────────────────────────────────────
     raw_windows  = []
     prev_sit     = None
     win_start    = 0
@@ -346,10 +342,7 @@ def build_situation_windows(nhl_plays: list) -> list:
     if prev_sit is not None:
         raw_windows.append([win_start, 99999, win_sit_code, win_sit, win_boundary])
 
-    # ── Phase 2: patch period-start windows that misrepresent carry-overs ─
-    # A PP that started in P1 carries into P2. The period-start event has
-    # sit='1551' but the first real play has sit='1451'. Patch the boundary
-    # window to show the carry-over PP situation.
+    # ── Phase 2: patch period-start carry-over windows ────────────────────
     period_starts = {
         p["elapsed"] for p in sorted_plays
         if p.get("type_key", "") == "period-start"
@@ -366,16 +359,20 @@ def build_situation_windows(nhl_plays: list) -> list:
         if next_real and next_real[2] != w_sit_code and next_real[0] - w_start <= 60:
             raw_windows[i][3] = next_real[3]
 
-    # ── Phase 3: merge adjacent windows with identical situations ──────────
+    # ── Phase 3: merge adjacent same-situation windows ────────────────────
+    # This eliminates zero-duration and fragmented windows that break lookup.
+    # Must run AFTER Phase 2 so patched period-start windows merge correctly.
     merged = []
     for w in raw_windows:
-        tup = [w[0], w[1], w[3]]
-        if merged and merged[-1][2] == tup[2]:
-            merged[-1][1] = tup[1]
+        sit_str = w[3]
+        if merged and merged[-1][2] == sit_str:
+            merged[-1][1] = w[1]   # extend end time
         else:
-            merged.append(tup)
+            merged.append([w[0], w[1], sit_str])
 
-    return [(w[0], w[1], w[2]) for w in merged]
+    # Remove zero-duration windows (start == end) — they are unreachable
+    # by the half-open interval lookup [start, end) and cause confusion
+    return [(w[0], w[1], w[2]) for w in merged if w[1] > w[0]]
 
 
 def find_nhl_situation(espn_play: dict, nhl_plays: list, windows: list) -> str:
