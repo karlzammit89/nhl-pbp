@@ -293,28 +293,42 @@ def espn_type_to_nhl(espn_type: str) -> list:
 def build_situation_windows(nhl_plays: list) -> list:
     """
     Build situation windows from NHL play-by-play.
-    Each window covers [start_elapsed, end_elapsed) — half-open interval
-    so no play falls between windows.
+    Each window covers [start_elapsed, end_elapsed) — half-open interval.
 
-    A new window opens whenever situationCode changes.
-    The situation string covers the full duration of that code.
+    Key rules:
+    - Skip period-start and period-end plays when building windows.
+      These bookkeeping events have situation codes that don't reflect
+      actual on-ice strength and corrupt cross-period PP/EN windows.
+    - A new window opens only when the situation code changes on a
+      real in-play event (not a period boundary marker).
     """
     if not nhl_plays:
         return []
 
-    windows    = []
-    prev_sit   = None
-    win_start  = 0
-    win_sit    = ""
+    # Types that should NOT trigger window changes
+    SKIP_TYPES = {"period-start", "period-end", "game-start", "game-end",
+                  "shootout-start", "shootout-end"}
 
-    sorted_plays = sorted(nhl_plays, key=lambda p: (p["period"], p["elapsed"], p["sort_order"]))
+    windows  = []
+    prev_sit = None
+    win_start = 0
+    win_sit   = ""
+
+    sorted_plays = sorted(
+        nhl_plays,
+        key=lambda p: (p["period"], p["elapsed"], p["sort_order"])
+    )
 
     for p in sorted_plays:
+        # Skip boundary events — don't let them break active PP/EN windows
+        if p.get("type_key", "") in SKIP_TYPES:
+            continue
+
         sit = p["sit_code"]
         if sit == prev_sit:
             continue
 
-        # Close previous window (half-open: ends exactly at this play's elapsed)
+        # Close previous window
         if prev_sit is not None:
             windows.append((win_start, p["elapsed"], win_sit))
 
@@ -322,7 +336,7 @@ def build_situation_windows(nhl_plays: list) -> list:
         win_sit   = p["situation"]
         prev_sit  = sit
 
-    # Final window extends to end of game
+    # Final window to end of game
     if prev_sit is not None:
         windows.append((win_start, 99999, win_sit))
 
