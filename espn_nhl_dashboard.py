@@ -687,7 +687,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     if nhl_id:
-        st.caption(f"📡 (NHL Game ID `{nhl_id}`)")
+        st.caption(f"📡 NHL Game ID `{nhl_id}`")
     else:
         st.caption("📡 NHL Game ID Not Found, PP & EN Unavailable")
 
