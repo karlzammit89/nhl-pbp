@@ -293,14 +293,19 @@ def build_situation_windows(nhl_plays: list) -> list:
     """
     Build gapless situation windows covering every second of the game.
 
-    Root cause of missing PPs: the NHL API logs the penalty event with
-    sit code '1551' (even strength), then the NEXT play gets the PP code.
-    This creates a gap — e.g. penalty at 02:23 but first 1451 play at 03:42.
+    NHL Rule: the power play (man advantage) starts at the FACEOFF after
+    the penalty, NOT when the penalty is called. The penalty clock also
+    starts at the faceoff. The NHL API correctly reflects this — the
+    situationCode changes to '1451'/'1541' on the faceoff play, not on
+    the penalty play itself.
 
-    Fix: when a new PP/EN window opens, check if the previous play was a
-    penalty. If so, back-date the window start to that penalty's elapsed time.
+    Therefore we trust the NHL API's situationCode exactly as logged.
+    We do NOT back-date windows to penalty time.
 
-    Also handles period-boundary carry-overs and merges fragmented windows.
+    What we DO handle:
+    - Period-boundary carry-overs (period-start has wrong sit code)
+    - Fragmented micro-windows from same-elapsed-second transitions
+    - Merging adjacent windows with identical situations
     """
     if not nhl_plays:
         return []
@@ -316,63 +321,35 @@ def build_situation_windows(nhl_plays: list) -> list:
         key=lambda p: (p["period"], p["elapsed"], p["sort_order"])
     )
 
-    # ── Phase 1: build raw windows, back-dating PP/EN starts to penalty ───
-    raw_windows   = []
-    prev_sit      = None
-    prev_play     = None
-    prev_penalty  = None   # track most recent penalty separately
-    win_start     = 0
-    win_sit_code  = ""
-    win_sit       = ""
-    win_boundary  = False
+    # ── Phase 1: build raw gapless windows from every play ────────────────
+    raw_windows  = []
+    prev_sit     = None
+    win_start    = 0
+    win_sit_code = ""
+    win_sit      = ""
+    win_boundary = False
 
     for p in sorted_plays:
         sit = p["sit_code"]
-
-        # Always track the most recent penalty regardless of sit_code changes
-        if p.get("type_key", "") in ("penalty", "delayed-penalty"):
-            prev_penalty = p
-
         if sit == prev_sit:
-            prev_play = p
             continue
 
         if prev_sit is not None:
-            actual_start = win_start
-            # Back-date PP/EN window start to when the penalty was called.
-            # The NHL API logs penalties with sit='1551' then the next play
-            # gets sit='1451'. We extend the NEW PP window back to the penalty.
-            new_is_special = "PP" in p["situation"] or "EN" in p["situation"]
-            if new_is_special and prev_penalty is not None:
-                pen_elapsed = prev_penalty["elapsed"]
-                if win_start <= pen_elapsed <= p["elapsed"]:
-                    # Split the current even-strength window at the penalty time:
-                    # [win_start → pen_elapsed] stays as even-strength
-                    if pen_elapsed > win_start:
-                        raw_windows.append([win_start, pen_elapsed, win_sit_code, win_sit, win_boundary])
-                    # [pen_elapsed → p["elapsed"]] gets the NEW PP situation
-                    raw_windows.append([pen_elapsed, p["elapsed"], p["sit_code"], p["situation"], False])
-                    # Update window tracking and skip the normal append below
-                    win_start    = p["elapsed"]
-                    win_sit_code = p["sit_code"]
-                    win_sit      = p["situation"]
-                    win_boundary = p.get("type_key", "") in BOUNDARY_TYPES
-                    prev_sit     = p["sit_code"]
-                    prev_play    = p
-                    continue
-            raw_windows.append([actual_start, p["elapsed"], win_sit_code, win_sit, win_boundary])
+            raw_windows.append([win_start, p["elapsed"], win_sit_code, win_sit, win_boundary])
 
         win_start    = p["elapsed"]
         win_sit_code = sit
         win_sit      = p["situation"]
         win_boundary = p.get("type_key", "") in BOUNDARY_TYPES
         prev_sit     = sit
-        prev_play    = p
 
     if prev_sit is not None:
         raw_windows.append([win_start, 99999, win_sit_code, win_sit, win_boundary])
 
     # ── Phase 2: patch period-start windows that misrepresent carry-overs ─
+    # A PP that started in P1 carries into P2. The period-start event has
+    # sit='1551' but the first real play has sit='1451'. Patch the boundary
+    # window to show the carry-over PP situation.
     period_starts = {
         p["elapsed"] for p in sorted_plays
         if p.get("type_key", "") == "period-start"
@@ -649,14 +626,15 @@ if st.session_state.view == "game":
         nhl_plays_debug = fetch_nhl_plays(st.session_state.nhl_game_id or "")
         windows_debug   = build_situation_windows(nhl_plays_debug)
 
-        st.markdown("**First 5 ESPN plays (raw clock → elapsed seconds):**")
-        for p in plays[:5]:
-            st.write(f"  seq={p['seq']} period={p['period_num']} clock=`{p['clock']}` elapsed={p['elapsed']}s sit=`{p['situation']}`")
+        st.markdown("**ESPN plays P1 00:00–05:00 (showing elapsed and situation):**")
+        for p in plays:
+            if p["period_num"] == 1 and 0 <= p["elapsed"] <= 300:
+                st.write(f"  seq={p['seq']} clock=`{p['clock']}` elapsed={p['elapsed']}s sit=`{p['situation'] or '(none)'}`")
 
-        st.markdown("**PP situation windows from NHL API:**")
+        st.markdown("**PP windows from NHL API (merged):**")
         pp_wins = [(s,e,sit) for s,e,sit in windows_debug if "PP" in sit]
         for s,e,sit in pp_wins[:20]:
-            st.write(f"  [{s:4d}s – {e:4d}s]  `{sit}`")
+            st.write(f"  [{s:4d}s – {min(e,9999):4d}s]  `{sit}`")
 
     st.divider()
 
