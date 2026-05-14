@@ -642,6 +642,20 @@ if st.session_state.view == "game":
     else:
         st.caption("📡 ESPN wallclock only — NHL game ID not found, situation unavailable")
 
+    # ── Debug expander ─────────────────────────────────────────────────────
+    with st.expander("🔍 Debug — clock mapping & situation windows", expanded=False):
+        nhl_plays_debug = fetch_nhl_plays(st.session_state.nhl_game_id or "")
+        windows_debug   = build_situation_windows(nhl_plays_debug)
+
+        st.markdown("**First 5 ESPN plays (raw clock → elapsed seconds):**")
+        for p in plays[:5]:
+            st.write(f"  seq={p['seq']} period={p['period_num']} clock=`{p['clock']}` elapsed={p['elapsed']}s sit=`{p['situation']}`")
+
+        st.markdown("**PP situation windows from NHL API:**")
+        pp_wins = [(s,e,sit) for s,e,sit in windows_debug if "PP" in sit]
+        for s,e,sit in pp_wins[:20]:
+            st.write(f"  [{s:4d}s – {e:4d}s]  `{sit}`")
+
     st.divider()
 
     # ── Filters ───────────────────────────────────────────────────────────
