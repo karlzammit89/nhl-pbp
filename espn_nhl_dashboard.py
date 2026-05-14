@@ -694,8 +694,8 @@ if st.session_state.view == "game":
     st.divider()
 
     def reset_filter_state():
-    st.session_state.filters_applied = False
-    st.session_state.filtered_plays = None
+        st.session_state.filters_applied = False
+        st.session_state.filtered_plays = None
     
     # ── Filters ───────────────────────────────────────────────────────────
     raw_periods = list({p["period_label"] for p in plays})
