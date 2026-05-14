@@ -772,38 +772,30 @@ if st.session_state.view == "game":
     total = len(plays)
     showing = len(display_list)
 
-    # ── Filter Status Messages (Only visible when filters are active) ─────
+    # ── Filter Status Messages (Only visible AFTER "Apply Filters" is clicked) ──
     if filters_applied:
         if showing == 0:
             st.warning("⚠️ No results found — please check the filters applied.")
             st.stop()
         
-        if USE_PERIOD_FILTER:
-            labels = selected_periods if selected_periods else ["none selected"]
-            st.info(f"🏒 **Period filter:** {', '.join(labels)} — showing **{showing}** of **{total}** plays")
+        # We consolidate the info into a single box or individual boxes 
+        # that only trigger if the filter is actually active AND applied.
+        if USE_PERIOD_FILTER and selected_periods:
+            st.info(f"🏒 **Period filter:** {', '.join(selected_periods)} — showing **{showing}** of **{total}** plays")
+        
         if USE_TIME_FILTER:
-            st.info(f"🕐 **Time filter:** {START_DT.strftime('%Y-%m-%d %H:%M')} → {END_DT.strftime('%Y-%m-%d %H:%M')} ET — showing **{showing}** of **{total}** plays")
+            st.info(f"🕐 **Time filter:** {START_DT.strftime('%H:%M')} → {END_DT.strftime('%H:%M')} ET — showing **{showing}** of **{total}** plays")
+        
         if USE_GOAL_FILTER:
-            n_goals = sum(1 for p in plays if p["type_text"] == "Goal")
-            st.info(f"🚨 **Goals Only filter:** {n_goals} goal(s) in game — showing **{showing}** of **{total}** plays")
+            st.info(f"🚨 **Goals Only filter:** showing **{showing}** of **{total}** plays")
+        
         if USE_PP_FILTER:
             st.info(f"⚡ **Power Plays Only filter:** showing **{showing}** of **{total}** plays")
+            
         if USE_GP_FILTER:
             st.info(f"🥅 **Empty Nets Only filter:** showing **{showing}** of **{total}** plays")
             st.warning("⚠️ No results found — please check the filters applied.")
             st.stop()
-        if USE_PERIOD_FILTER:
-            labels = selected_periods if selected_periods else ["none selected"]
-            st.info(f"🏒 **Period filter:** {', '.join(labels)} — showing **{showing}** of **{total}** plays")
-        if USE_TIME_FILTER:
-            st.info(f"🕐 **Time filter:** {START_DT.strftime('%Y-%m-%d %H:%M')} → {END_DT.strftime('%Y-%m-%d %H:%M')} ET — showing **{showing}** of **{total}** plays")
-        if USE_GOAL_FILTER:
-            n_goals = sum(1 for p in plays if p["type_text"] == "Goal")
-            st.info(f"🚨 **Goals Only filter:** {n_goals} goal(s) in game — showing **{showing}** of **{total}** plays")
-        if USE_PP_FILTER:
-            st.info(f"⚡ **Power Plays Only filter:** showing **{showing}** of **{total}** plays")
-        if USE_GP_FILTER:
-            st.info(f"🥅 **Empty Nets Only filter:** showing **{showing}** of **{total}** plays")
 
     # ── Render plays ──────────────────────────────────────────────────────
     for p in display_list:
