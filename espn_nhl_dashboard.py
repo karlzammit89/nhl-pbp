@@ -735,34 +735,61 @@ if st.session_state.view == "game":
     USE_PP_FILTER   = st.checkbox("⚡ Power Plays Only", value=False)
     USE_GP_FILTER   = st.checkbox("🥅 Empty Nets Only", value=False)
 
-    if st.button("🚀 Apply Filters"):
-        def passes(p):
-            sit = p.get("situation", "")
-            if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
-                return False
-            if USE_TIME_FILTER:
-                if not p["wall_dt"] or START_DT is None or END_DT is None:
-                    return False
-                if not (START_DT <= p["wall_dt"] <= END_DT):
-                    return False
-            if USE_GOAL_FILTER and p["type_text"] != "Goal":
-                return False
-            if USE_PP_FILTER and "PP" not in sit:
-                return False
-            if USE_GP_FILTER and "EN" not in sit:
-                return False
-            return True
-        st.session_state.filtered_plays  = [p for p in plays if passes(p)]
-        st.session_state.filters_applied = True
-        st.rerun()
+    # ── Filter Actions ───────────────────────────────────────────────────
+    btn_col1, btn_col2, _ = st.columns([1.3, 1.3, 7.4])
 
-    filters_applied = st.session_state.get("filters_applied")
-    display_list    = st.session_state.filtered_plays if filters_applied else plays
-    total   = len(plays)
+    with btn_col1:
+        if st.button("🚀 Apply Filters", use_container_width=True):
+            def passes(p):
+                sit = p.get("situation", "")
+                if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
+                    return False
+                if USE_TIME_FILTER:
+                    if not p["wall_dt"] or START_DT is None or END_DT is None:
+                        return False
+                    if not (START_DT <= p["wall_dt"] <= END_DT):
+                        return False
+                if USE_GOAL_FILTER and p["type_text"] != "Goal":
+                    return False
+                if USE_PP_FILTER and "PP" not in sit:
+                    return False
+                if USE_GP_FILTER and "EN" not in sit:
+                    return False
+                return True
+            st.session_state.filtered_plays = [p for p in plays if passes(p)]
+            st.session_state.filters_applied = True
+            st.rerun()
+
+    with btn_col2:
+        if st.button("🗑️ Remove Filters", use_container_width=True):
+            st.session_state.filters_applied = False
+            st.session_state.filtered_plays = None
+            st.rerun()
+
+    # ── Logic for determining which plays to show ────────────────────────
+    filters_applied = st.session_state.get("filters_applied", False)
+    display_list = st.session_state.filtered_plays if filters_applied else plays
+    total = len(plays)
     showing = len(display_list)
 
+    # ── Filter Status Messages (Only visible when filters are active) ─────
     if filters_applied:
         if showing == 0:
+            st.warning("⚠️ No results found — please check the filters applied.")
+            st.stop()
+        
+        if USE_PERIOD_FILTER:
+            labels = selected_periods if selected_periods else ["none selected"]
+            st.info(f"🏒 **Period filter:** {', '.join(labels)} — showing **{showing}** of **{total}** plays")
+        if USE_TIME_FILTER:
+            st.info(f"🕐 **Time filter:** {START_DT.strftime('%Y-%m-%d %H:%M')} → {END_DT.strftime('%Y-%m-%d %H:%M')} ET — showing **{showing}** of **{total}** plays")
+        if USE_GOAL_FILTER:
+            n_goals = sum(1 for p in plays if p["type_text"] == "Goal")
+            st.info(f"🚨 **Goals Only filter:** {n_goals} goal(s) in game — showing **{showing}** of **{total}** plays")
+        if USE_PP_FILTER:
+            st.info(f"⚡ **Power Plays Only filter:** showing **{showing}** of **{total}** plays")
+        if USE_GP_FILTER:
+            st.info(f"🥅 **Empty Nets Only filter:** showing **{showing}** of **{total}** plays")
             st.warning("⚠️ No results found — please check the filters applied.")
             st.stop()
         if USE_PERIOD_FILTER:
