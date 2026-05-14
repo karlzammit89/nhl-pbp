@@ -764,14 +764,14 @@ if st.session_state.view == "game":
     with btn_col2:
         if st.button("🗑️ Remove Filters", use_container_width=True):
             def reset_filters():
-        st.session_state.filters_applied = False
-        st.session_state.filtered_plays = None
-        # Reset the widget values
-        st.session_state.cb_period = False
-        st.session_state.cb_time = False
-        st.session_state.cb_goals = False
-        st.session_state.cb_pp = False
-        st.session_state.cb_en = False
+                st.session_state.filters_applied = False
+                st.session_state.filtered_plays = None
+                # Reset the widget values
+                st.session_state.cb_period = False
+                st.session_state.cb_time = False
+                st.session_state.cb_goals = False
+                st.session_state.cb_pp = False
+                st.session_state.cb_en = False
 
     # ── Button Layout ───────────────────────────────────────────────────
     btn_col1, btn_col2, _ = st.columns([1.5, 1.5, 7])
