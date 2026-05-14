@@ -129,15 +129,24 @@ def nhl_clock_to_seconds(time_in_period: str, period_num: int) -> int:
 
 def parse_nhl_situation(sit_code: str) -> str:
     """
-    Parse NHL situation code [away_goalie][away_sk][home_sk][home_goalie].
-    Returns human-readable strength string e.g. '5v5', '4v5 PP', 'EN'.
+    Parse NHL situation code: [away_goalie][away_sk][home_sk][home_goalie]
+    Goalie digit: '1' = in net, '0' = pulled (empty net).
+    Skaters: digit 1-6 (6 = extra attacker with goalie pulled).
+
+    All valid EN patterns detected:
+      away goalie pulled: sit_code[0] == '0' (e.g. 0651, 0551, 0451, 0351)
+      home goalie pulled: sit_code[3] == '0' (e.g. 1650, 1560, 1550, 1540)
+      both pulled:        sit_code[0]=='0' and sit_code[3]=='0'
+
+    Returns human-readable string e.g. '5v5', '4v5 PP', '6v5 EN', '5v4 PP+EN'
     """
     if not sit_code or len(sit_code) < 4:
         return ""
-    away_g  = sit_code[0]
+
+    away_g = sit_code[0]   # '0' = away goalie pulled
     away_sk = sit_code[1]
     home_sk = sit_code[2]
-    home_g  = sit_code[3]
+    home_g = sit_code[3]   # '0' = home goalie pulled
 
     try:
         a = int(away_sk)
@@ -147,11 +156,19 @@ def parse_nhl_situation(sit_code: str) -> str:
 
     is_away_en = (away_g == "0")
     is_home_en = (home_g == "0")
+    is_en      = is_away_en or is_home_en
+    is_pp      = (a != h)
 
     parts = [f"{a}v{h}"]
-    if is_away_en or is_home_en:
-        parts.append("EN")
-    elif a != h:
+
+    if is_away_en and is_home_en:
+        parts.append("Both EN")
+    elif is_away_en:
+        parts.append("Away EN")
+    elif is_home_en:
+        parts.append("Home EN")
+
+    if is_pp:
         parts.append("PP")
 
     return " ".join(parts)
@@ -275,11 +292,12 @@ def espn_type_to_nhl(espn_type: str) -> list:
 
 def build_situation_windows(nhl_plays: list) -> list:
     """
-    Build a list of situation windows from NHL play-by-play.
-    Each window = (start_elapsed, end_elapsed, situation_string).
-    A window starts when situation code changes and ends when it changes back.
-    This means every ESPN play can be checked against which window it falls in
-    rather than trying to match individual plays.
+    Build situation windows from NHL play-by-play.
+    Each window covers [start_elapsed, end_elapsed) — half-open interval
+    so no play falls between windows.
+
+    A new window opens whenever situationCode changes.
+    The situation string covers the full duration of that code.
     """
     if not nhl_plays:
         return []
@@ -289,24 +307,22 @@ def build_situation_windows(nhl_plays: list) -> list:
     win_start  = 0
     win_sit    = ""
 
-    # NHL plays are already sorted by sort_order from the API
-    sorted_plays = sorted(nhl_plays, key=lambda p: (p["period"], p["elapsed"]))
+    sorted_plays = sorted(nhl_plays, key=lambda p: (p["period"], p["elapsed"], p["sort_order"]))
 
     for p in sorted_plays:
         sit = p["sit_code"]
         if sit == prev_sit:
             continue
 
-        # Close previous window
+        # Close previous window (half-open: ends exactly at this play's elapsed)
         if prev_sit is not None:
             windows.append((win_start, p["elapsed"], win_sit))
 
-        # Open new window
         win_start = p["elapsed"]
         win_sit   = p["situation"]
         prev_sit  = sit
 
-    # Close final window with a large end value
+    # Final window extends to end of game
     if prev_sit is not None:
         windows.append((win_start, 99999, win_sit))
 
@@ -315,15 +331,9 @@ def build_situation_windows(nhl_plays: list) -> list:
 
 def find_nhl_situation(espn_play: dict, nhl_plays: list, windows: list) -> str:
     """
-    Find the NHL situation for an ESPN play using two strategies:
-
-    Strategy 1 — Window lookup (primary):
-      Check which situation window the ESPN play falls in by elapsed seconds.
-      This covers ALL plays during a PP, not just the ones that match an event.
-
-    Strategy 2 — Event matching (fallback):
-      If no window matches, try to match an individual NHL play by period +
-      clock ±FUZZY_SECONDS + event type.
+    Find situation for an ESPN play using:
+    1. Window lookup — which situation window does this elapsed time fall in?
+    2. Fuzzy event match fallback — if no window matches.
     """
     if not nhl_plays and not windows:
         return ""
@@ -331,13 +341,18 @@ def find_nhl_situation(espn_play: dict, nhl_plays: list, windows: list) -> str:
     period  = espn_play.get("period_num", 1)
     elapsed = espn_play.get("elapsed", 0)
 
-    # Strategy 1: window lookup
+    # Strategy 1: window lookup (half-open interval)
     for (w_start, w_end, w_sit) in windows:
-        if w_start <= elapsed <= w_end:
+        if w_start <= elapsed < w_end:
             return w_sit
+    # Include the final window (closed at end)
+    if windows:
+        last = windows[-1]
+        if elapsed >= last[0]:
+            return last[2]
 
     # Strategy 2: fuzzy event match fallback
-    nhl_types = espn_type_to_nhl(espn_play.get("type_text", ""))
+    nhl_types  = espn_type_to_nhl(espn_play.get("type_text", ""))
     candidates = [
         p for p in nhl_plays
         if p["period"] == period
