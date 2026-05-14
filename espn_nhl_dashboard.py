@@ -96,16 +96,15 @@ def period_label(period_num, period_type: str = "") -> str:
 
 def espn_clock_to_seconds(clock_str: str, period_num: int) -> int:
     """
-    Convert ESPN clock display to absolute seconds elapsed from game start.
-    ESPN NHL clock.displayValue shows time REMAINING in period (counts down),
-    same as NHL — e.g. "14:48" means 14min 48sec remaining = 5min 12sec elapsed.
-    Returns: period_offset + (1200 - remaining_secs)
+    Convert ESPN clock to absolute game seconds elapsed.
+    ESPN NHL clock counts UP from 0:00 e.g. "02:23" = 2min 23sec into period.
+    This is OPPOSITE to NHL API which counts down from 20:00.
+    Returns: period_offset + elapsed_in_period
     """
     try:
         parts = clock_str.strip().split(":")
         mins, secs = int(parts[0]), int(parts[1])
-        remaining  = mins * 60 + secs
-        elapsed    = 1200 - remaining
+        elapsed = mins * 60 + secs
     except Exception:
         elapsed = 0
     period_offset = (period_num - 1) * 1200
@@ -294,25 +293,14 @@ def build_situation_windows(nhl_plays: list) -> list:
     """
     Build gapless situation windows covering every second of the game.
 
-    The problem with period-start/end plays:
-      - They have sit codes that may NOT reflect the actual on-ice situation.
-      - A carry-over PP from P1→P2 means P2's period-start has sit='1551'
-        even though the PP is still active.
-      - But we CANNOT skip period-start entirely — doing so creates gaps at
-        the start of each period, losing 7 plays.
+    Root cause of missing PPs: the NHL API logs the penalty event with
+    sit code '1551' (even strength), then the NEXT play gets the PP code.
+    This creates a gap — e.g. penalty at 02:23 but first 1451 play at 03:42.
 
-    Solution — two phases:
-      Phase 1: Build raw windows from ALL plays (including boundaries).
-               This gives gapless coverage — no second is uncovered.
-      Phase 2: Patch period-start windows that are wrong.
-               For each period, find the first non-boundary play.
-               If it has a different sit code, the period-start window
-               was a carry-over mislabelled as even-strength.
-               Replace that window's situation with the correct one.
+    Fix: when a new PP/EN window opens, check if the previous play was a
+    penalty. If so, back-date the window start to that penalty's elapsed time.
 
-    This gives:
-      - Complete gapless coverage (no lost plays)
-      - Correct carry-over PP/EN across period boundaries
+    Also handles period-boundary carry-overs and merges fragmented windows.
     """
     if not nhl_plays:
         return []
@@ -328,75 +316,89 @@ def build_situation_windows(nhl_plays: list) -> list:
         key=lambda p: (p["period"], p["elapsed"], p["sort_order"])
     )
 
-    # ── Phase 1: build raw gapless windows from every play ────────────────
-    raw_windows = []   # list of [start, end, sit_code, situation, is_boundary]
-    prev_sit    = None
-    win_start   = 0
-    win_sit_code= ""
-    win_sit     = ""
-    win_boundary= False
+    # ── Phase 1: build raw windows, back-dating PP/EN starts to penalty ───
+    raw_windows   = []
+    prev_sit      = None
+    prev_play     = None
+    prev_penalty  = None   # track most recent penalty separately
+    win_start     = 0
+    win_sit_code  = ""
+    win_sit       = ""
+    win_boundary  = False
 
     for p in sorted_plays:
         sit = p["sit_code"]
+
+        # Always track the most recent penalty regardless of sit_code changes
+        if p.get("type_key", "") in ("penalty", "delayed-penalty"):
+            prev_penalty = p
+
         if sit == prev_sit:
+            prev_play = p
             continue
 
         if prev_sit is not None:
-            raw_windows.append([win_start, p["elapsed"], win_sit_code, win_sit, win_boundary])
+            actual_start = win_start
+            # Back-date PP/EN window start to when the penalty was called.
+            # The NHL API logs penalties with sit='1551' then the next play
+            # gets sit='1451'. We extend the NEW PP window back to the penalty.
+            new_is_special = "PP" in p["situation"] or "EN" in p["situation"]
+            if new_is_special and prev_penalty is not None:
+                pen_elapsed = prev_penalty["elapsed"]
+                if win_start <= pen_elapsed <= p["elapsed"]:
+                    # Split the current even-strength window at the penalty time:
+                    # [win_start → pen_elapsed] stays as even-strength
+                    if pen_elapsed > win_start:
+                        raw_windows.append([win_start, pen_elapsed, win_sit_code, win_sit, win_boundary])
+                    # [pen_elapsed → p["elapsed"]] gets the NEW PP situation
+                    raw_windows.append([pen_elapsed, p["elapsed"], p["sit_code"], p["situation"], False])
+                    # Update window tracking and skip the normal append below
+                    win_start    = p["elapsed"]
+                    win_sit_code = p["sit_code"]
+                    win_sit      = p["situation"]
+                    win_boundary = p.get("type_key", "") in BOUNDARY_TYPES
+                    prev_sit     = p["sit_code"]
+                    prev_play    = p
+                    continue
+            raw_windows.append([actual_start, p["elapsed"], win_sit_code, win_sit, win_boundary])
 
         win_start    = p["elapsed"]
         win_sit_code = sit
         win_sit      = p["situation"]
-        win_boundary = p["type_key"] in BOUNDARY_TYPES
+        win_boundary = p.get("type_key", "") in BOUNDARY_TYPES
         prev_sit     = sit
+        prev_play    = p
 
     if prev_sit is not None:
         raw_windows.append([win_start, 99999, win_sit_code, win_sit, win_boundary])
 
-    # ── Phase 2: patch boundary windows that misrepresent carry-over situations ──
-    # For each boundary window, look at the NEXT non-boundary window.
-    # If the next real-play sit_code differs AND the boundary window is at the
-    # very start of a period (elapsed == period_start_elapsed), it's a mislabelled
-    # carry-over. Patch its situation to match the first real play of that period.
-    # Exception: if the next real play starts IMMEDIATELY (same elapsed second),
-    # the boundary window has zero duration and is harmless — leave it.
-
-    # Find all period-start elapsed values
-    period_starts = set()
-    for p in sorted_plays:
-        if p["type_key"] in BOUNDARY_TYPES and p["type_key"] == "period-start":
-            period_starts.add(p["elapsed"])
-
+    # ── Phase 2: patch period-start windows that misrepresent carry-overs ─
+    period_starts = {
+        p["elapsed"] for p in sorted_plays
+        if p.get("type_key", "") == "period-start"
+    }
     for i, win in enumerate(raw_windows):
         w_start, w_end, w_sit_code, w_sit, w_is_boundary = win
-        if not w_is_boundary:
+        if not w_is_boundary or w_start not in period_starts:
             continue
-        if w_start not in period_starts:
-            continue
+        next_real = next(
+            (raw_windows[j] for j in range(i + 1, len(raw_windows))
+             if not raw_windows[j][4]),
+            None
+        )
+        if next_real and next_real[2] != w_sit_code and next_real[0] - w_start <= 60:
+            raw_windows[i][3] = next_real[3]
 
-        # Find the next non-boundary window
-        next_real = None
-        for j in range(i + 1, len(raw_windows)):
-            if not raw_windows[j][4]:  # not a boundary window
-                next_real = raw_windows[j]
-                break
+    # ── Phase 3: merge adjacent windows with identical situations ──────────
+    merged = []
+    for w in raw_windows:
+        tup = [w[0], w[1], w[3]]
+        if merged and merged[-1][2] == tup[2]:
+            merged[-1][1] = tup[1]
+        else:
+            merged.append(tup)
 
-        if next_real is None:
-            continue
-
-        next_sit_code = next_real[2]
-
-        # If the carry-over sit code differs from the boundary window's sit code,
-        # patch the boundary window to show the correct carry-over situation.
-        # This handles PP/EN that started in the previous period.
-        if next_sit_code != w_sit_code:
-            # Only patch if carry-over starts very close to period start
-            # (within 60 seconds — genuine carry-overs start right away)
-            if next_real[0] - w_start <= 60:
-                raw_windows[i][3] = next_real[3]   # patch situation string
-
-    # Return as plain tuples (start, end, situation)
-    return [(w[0], w[1], w[3]) for w in raw_windows]
+    return [(w[0], w[1], w[2]) for w in merged]
 
 
 def find_nhl_situation(espn_play: dict, nhl_plays: list, windows: list) -> str:
