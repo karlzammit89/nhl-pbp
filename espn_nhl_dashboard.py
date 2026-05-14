@@ -292,55 +292,111 @@ def espn_type_to_nhl(espn_type: str) -> list:
 
 def build_situation_windows(nhl_plays: list) -> list:
     """
-    Build situation windows from NHL play-by-play.
-    Each window covers [start_elapsed, end_elapsed) — half-open interval.
+    Build gapless situation windows covering every second of the game.
 
-    Key rules:
-    - Skip period-start and period-end plays when building windows.
-      These bookkeeping events have situation codes that don't reflect
-      actual on-ice strength and corrupt cross-period PP/EN windows.
-    - A new window opens only when the situation code changes on a
-      real in-play event (not a period boundary marker).
+    The problem with period-start/end plays:
+      - They have sit codes that may NOT reflect the actual on-ice situation.
+      - A carry-over PP from P1→P2 means P2's period-start has sit='1551'
+        even though the PP is still active.
+      - But we CANNOT skip period-start entirely — doing so creates gaps at
+        the start of each period, losing 7 plays.
+
+    Solution — two phases:
+      Phase 1: Build raw windows from ALL plays (including boundaries).
+               This gives gapless coverage — no second is uncovered.
+      Phase 2: Patch period-start windows that are wrong.
+               For each period, find the first non-boundary play.
+               If it has a different sit code, the period-start window
+               was a carry-over mislabelled as even-strength.
+               Replace that window's situation with the correct one.
+
+    This gives:
+      - Complete gapless coverage (no lost plays)
+      - Correct carry-over PP/EN across period boundaries
     """
     if not nhl_plays:
         return []
 
-    # Types that should NOT trigger window changes
-    SKIP_TYPES = {"period-start", "period-end", "game-start", "game-end",
-                  "shootout-start", "shootout-end"}
-
-    windows  = []
-    prev_sit = None
-    win_start = 0
-    win_sit   = ""
+    BOUNDARY_TYPES = {
+        "period-start", "period-end",
+        "game-start",   "game-end",
+        "shootout-start", "shootout-end",
+    }
 
     sorted_plays = sorted(
         nhl_plays,
         key=lambda p: (p["period"], p["elapsed"], p["sort_order"])
     )
 
-    for p in sorted_plays:
-        # Skip boundary events — don't let them break active PP/EN windows
-        if p.get("type_key", "") in SKIP_TYPES:
-            continue
+    # ── Phase 1: build raw gapless windows from every play ────────────────
+    raw_windows = []   # list of [start, end, sit_code, situation, is_boundary]
+    prev_sit    = None
+    win_start   = 0
+    win_sit_code= ""
+    win_sit     = ""
+    win_boundary= False
 
+    for p in sorted_plays:
         sit = p["sit_code"]
         if sit == prev_sit:
             continue
 
-        # Close previous window
         if prev_sit is not None:
-            windows.append((win_start, p["elapsed"], win_sit))
+            raw_windows.append([win_start, p["elapsed"], win_sit_code, win_sit, win_boundary])
 
-        win_start = p["elapsed"]
-        win_sit   = p["situation"]
-        prev_sit  = sit
+        win_start    = p["elapsed"]
+        win_sit_code = sit
+        win_sit      = p["situation"]
+        win_boundary = p["type_key"] in BOUNDARY_TYPES
+        prev_sit     = sit
 
-    # Final window to end of game
     if prev_sit is not None:
-        windows.append((win_start, 99999, win_sit))
+        raw_windows.append([win_start, 99999, win_sit_code, win_sit, win_boundary])
 
-    return windows
+    # ── Phase 2: patch boundary windows that misrepresent carry-over situations ──
+    # For each boundary window, look at the NEXT non-boundary window.
+    # If the next real-play sit_code differs AND the boundary window is at the
+    # very start of a period (elapsed == period_start_elapsed), it's a mislabelled
+    # carry-over. Patch its situation to match the first real play of that period.
+    # Exception: if the next real play starts IMMEDIATELY (same elapsed second),
+    # the boundary window has zero duration and is harmless — leave it.
+
+    # Find all period-start elapsed values
+    period_starts = set()
+    for p in sorted_plays:
+        if p["type_key"] in BOUNDARY_TYPES and p["type_key"] == "period-start":
+            period_starts.add(p["elapsed"])
+
+    for i, win in enumerate(raw_windows):
+        w_start, w_end, w_sit_code, w_sit, w_is_boundary = win
+        if not w_is_boundary:
+            continue
+        if w_start not in period_starts:
+            continue
+
+        # Find the next non-boundary window
+        next_real = None
+        for j in range(i + 1, len(raw_windows)):
+            if not raw_windows[j][4]:  # not a boundary window
+                next_real = raw_windows[j]
+                break
+
+        if next_real is None:
+            continue
+
+        next_sit_code = next_real[2]
+
+        # If the carry-over sit code differs from the boundary window's sit code,
+        # patch the boundary window to show the correct carry-over situation.
+        # This handles PP/EN that started in the previous period.
+        if next_sit_code != w_sit_code:
+            # Only patch if carry-over starts very close to period start
+            # (within 60 seconds — genuine carry-overs start right away)
+            if next_real[0] - w_start <= 60:
+                raw_windows[i][3] = next_real[3]   # patch situation string
+
+    # Return as plain tuples (start, end, situation)
+    return [(w[0], w[1], w[3]) for w in raw_windows]
 
 
 def find_nhl_situation(espn_play: dict, nhl_plays: list, windows: list) -> str:
