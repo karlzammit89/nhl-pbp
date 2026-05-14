@@ -763,14 +763,44 @@ if st.session_state.view == "game":
 
     with btn_col2:
         if st.button("🗑️ Remove Filters", use_container_width=True):
-            # Reset logic: Clear filter states and rerun to uncheck boxes
-            st.session_state.filters_applied = False
-            st.session_state.filtered_plays = None
-            # Reset the widget keys directly
-            for key in ["cb_period", "cb_time", "cb_goals", "cb_pp", "cb_en"]:
-                if key in st.session_state:
-                    st.session_state[key] = False
+            def reset_filters():
+        st.session_state.filters_applied = False
+        st.session_state.filtered_plays = None
+        # Reset the widget values
+        st.session_state.cb_period = False
+        st.session_state.cb_time = False
+        st.session_state.cb_goals = False
+        st.session_state.cb_pp = False
+        st.session_state.cb_en = False
+
+    # ── Button Layout ───────────────────────────────────────────────────
+    btn_col1, btn_col2, _ = st.columns([1.5, 1.5, 7])
+
+    with btn_col1:
+        if st.button("🚀 Apply Filters", use_container_width=True):
+            def passes(p):
+                sit = p.get("situation", "")
+                if USE_PERIOD_FILTER and selected_periods and p["period_label"] not in selected_periods:
+                    return False
+                if USE_TIME_FILTER:
+                    if not p["wall_dt"] or START_DT is None or END_DT is None:
+                        return False
+                    if not (START_DT <= p["wall_dt"] <= END_DT):
+                        return False
+                if USE_GOAL_FILTER and p["type_text"] != "Goal":
+                    return False
+                if USE_PP_FILTER and "PP" not in sit:
+                    return False
+                if USE_GP_FILTER and "EN" not in sit:
+                    return False
+                return True
+            st.session_state.filtered_plays = [p for p in plays if passes(p)]
+            st.session_state.filters_applied = True
             st.rerun()
+
+    with btn_col2:
+        # Using on_click avoids the StreamlitAPIException mutation error
+        st.button("🗑️ Remove Filters", use_container_width=True, on_click=reset_filters)
 
     filters_applied = st.session_state.get("filters_applied")
     display_list    = st.session_state.filtered_plays if filters_applied else plays
