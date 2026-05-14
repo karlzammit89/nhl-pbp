@@ -329,6 +329,65 @@ def build_situation_windows(nhl_plays: list) -> list:
         if next_real and next_real[2] != w_sit_code and next_real[0] - w_start <= 60:
             raw_windows[i][3] = next_real[3]
 
+    # ── Phase 2b: gap-fill missing PP windows from penalty plays ──────────
+    # Root cause: the NHL API sometimes logs a penalty play but then logs
+    # ZERO plays with the resulting PP situation code. Phase 1 never sees
+    # a sit code change so no PP window is created, even though a real PP
+    # occurred on the ice.
+    #
+    # Fix: for every penalty play, check if a PP window already covers the
+    # expected PP timeframe. If not, look for any play logged AFTER the
+    # penalty that has a PP situation code and use it to synthesise a window.
+    penalty_plays = [
+        p for p in sorted_plays
+        if p.get("type_key", "") in ("penalty", "delayed-penalty")
+    ]
+    for pen in penalty_plays:
+        pen_e            = pen["elapsed"]
+        pp_expected_end  = pen_e + 360   # max 5-min major + buffer
+
+        # Check if any existing raw window already covers this penalty's PP
+        covered = any(
+            "PP" in w[3]
+            and w[0] <= pp_expected_end
+            and w[1] >= pen_e
+            for w in raw_windows
+        )
+        if covered:
+            continue
+
+        # No PP window exists — find the first play with a PP sit code
+        # that occurs after this penalty and within the expected window
+        first_pp = next(
+            (p for p in sorted_plays
+             if p["elapsed"] > pen_e
+             and p["elapsed"] <= pp_expected_end
+             and "PP" in p["situation"]),
+            None
+        )
+        if not first_pp:
+            continue  # truly no PP data — skip
+
+        # Find where the PP ends (first non-PP play after the PP starts)
+        synth_end = next(
+            (p["elapsed"] for p in sorted_plays
+             if p["elapsed"] > first_pp["elapsed"]
+             and "PP" not in p["situation"]),
+            first_pp["elapsed"] + 120
+        )
+
+        # Insert synthesised window — it will be merged in Phase 3
+        synth = [first_pp["elapsed"], synth_end,
+                 first_pp["sit_code"], first_pp["situation"], False]
+        inserted = False
+        for i, w in enumerate(raw_windows):
+            if w[0] >= synth[0]:
+                raw_windows.insert(i, synth)
+                inserted = True
+                break
+        if not inserted:
+            raw_windows.append(synth)
+
     # ── Phase 3: merge adjacent same-situation windows ────────────────────
     merged = []
     for w in raw_windows:
