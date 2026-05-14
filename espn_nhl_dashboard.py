@@ -360,19 +360,92 @@ def build_situation_windows(nhl_plays: list) -> list:
             raw_windows[i][3] = next_real[3]
 
     # ── Phase 3: merge adjacent same-situation windows ────────────────────
-    # This eliminates zero-duration and fragmented windows that break lookup.
-    # Must run AFTER Phase 2 so patched period-start windows merge correctly.
     merged = []
     for w in raw_windows:
         sit_str = w[3]
         if merged and merged[-1][2] == sit_str:
-            merged[-1][1] = w[1]   # extend end time
+            merged[-1][1] = w[1]
         else:
             merged.append([w[0], w[1], sit_str])
 
-    # Remove zero-duration windows (start == end) — they are unreachable
-    # by the half-open interval lookup [start, end) and cause confusion
-    return [(w[0], w[1], w[2]) for w in merged if w[1] > w[0]]
+    # Remove zero-duration windows — unreachable by [start, end) lookup
+    merged = [w for w in merged if w[1] > w[0]]
+
+    # ── Phase 4: validate PP windows against NHL rules ─────────────────────
+    #
+    # NHL Rule: a power play REQUIRES a penalty. No penalty = no PP.
+    # Two checks applied to every PP window:
+    #
+    # Check A — Minimum duration (30 seconds):
+    #   Real penalties are 2 minutes minimum. A PP window under 30 seconds
+    #   is almost certainly a data artifact from the NHL API. Discard it.
+    #   (30s chosen conservatively — even quick offsetting penalties leave
+    #    at least 30s of PP before becoming 4v4)
+    #
+    # Check B — Penalty validation (within 300 seconds = 5 min max penalty):
+    #   Every PP window must have a penalty play logged in the NHL data
+    #   within 300 seconds before the window starts. If no penalty exists,
+    #   the NHL API reported a false situation code. Downgrade to 5v5.
+    #   Exception: carry-over PPs from a previous period — these are valid
+    #   even if the penalty was logged >300s ago in absolute game time,
+    #   because the period boundary resets the lookup window. We handle this
+    #   by also checking within 60s AFTER the window start (for period-starts
+    #   where the penalty was logged in the new period's opening plays).
+    #
+    # EN windows are NOT validated — a team can pull their goalie any time,
+    # no penalty required.
+
+    MIN_PP_DURATION = 30    # seconds — discard PP windows shorter than this
+    MAX_PENALTY_LOOKBACK = 300  # seconds — max time to look back for a penalty
+
+    # Build a sorted list of all penalty elapsed times for fast lookup
+    penalty_elapsed_times = sorted([
+        p["elapsed"] for p in sorted_plays
+        if p.get("type_key", "") in ("penalty", "delayed-penalty")
+    ])
+
+    def has_valid_penalty(win_start: int, win_end: int) -> bool:
+        """
+        Returns True if a penalty exists that could have caused this PP window.
+        Looks back up to MAX_PENALTY_LOOKBACK seconds before the window start,
+        and also forward up to 60 seconds (for carry-over PPs logged at period start).
+        """
+        lookback_start = win_start - MAX_PENALTY_LOOKBACK
+        lookahead_end  = win_start + 60
+        for t in penalty_elapsed_times:
+            if lookback_start <= t <= lookahead_end:
+                return True
+        return False
+
+    validated = []
+    for w in merged:
+        w_start, w_end, w_sit = w
+        duration = w_end - w_start if w_end < 99999 else 9999
+
+        is_pp = "PP" in w_sit and "EN" not in w_sit  # pure PP, not EN+PP
+        is_en = "EN" in w_sit                          # EN (with or without PP)
+
+        if is_pp and not is_en:
+            # Check A: minimum duration
+            if duration < MIN_PP_DURATION:
+                validated.append([w_start, w_end, "5v5"])
+                continue
+            # Check B: must have a causative penalty
+            if not has_valid_penalty(w_start, w_end):
+                validated.append([w_start, w_end, "5v5"])
+                continue
+
+        validated.append(list(w))
+
+    # Final merge after validation (downgraded windows may now be adjacent 5v5)
+    final = []
+    for w in validated:
+        if final and final[-1][2] == w[2]:
+            final[-1][1] = w[1]
+        else:
+            final.append(w)
+
+    return [(w[0], w[1], w[2]) for w in final if w[1] > w[0]]
 
 
 def find_nhl_situation(espn_play: dict, nhl_plays: list, windows: list) -> str:
