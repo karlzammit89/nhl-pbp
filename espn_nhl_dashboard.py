@@ -693,6 +693,10 @@ if st.session_state.view == "game":
 
     st.divider()
 
+    def reset_filter_state():
+    st.session_state.filters_applied = False
+    st.session_state.filtered_plays = None
+    
     # ── Filters ───────────────────────────────────────────────────────────
     raw_periods = list({p["period_label"] for p in plays})
     def p_key(l):
@@ -706,10 +710,10 @@ if st.session_state.view == "game":
     game_start_default = min(all_dts) if all_dts else None
     game_end_default   = max(all_dts) if all_dts else None
 
-    USE_PERIOD_FILTER  = st.checkbox("🏒 Filter by Period", value=False)
+    USE_PERIOD_FILTER  = st.checkbox("🏒 Filter by Period", value=False, on_change=reset_filter_state)
     selected_periods   = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
 
-    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False)
+    USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False, on_change=reset_filter_state)
     START_DT = END_DT = None
     if USE_TIME_FILTER:
         def_start_date = game_start_default.date() if game_start_default else ddate.today()
@@ -731,11 +735,13 @@ if st.session_state.view == "game":
         START_DT = datetime.combine(start_date_input, start_time_input).replace(tzinfo=ET)
         END_DT   = datetime.combine(end_date_input,   end_time_input).replace(tzinfo=ET)
 
-    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False)
-    USE_PP_FILTER   = st.checkbox("⚡ Power Plays Only", value=False)
-    USE_GP_FILTER   = st.checkbox("🥅 Empty Nets Only", value=False)
+    USE_GOAL_FILTER = st.checkbox("🚨 Goals Only", value=False, on_change=reset_filter_state)
+    USE_PP_FILTER   = st.checkbox("⚡ Power Plays Only", value=False, on_change=reset_filter_state)
+    USE_GP_FILTER   = st.checkbox("🥅 Empty Nets Only", value=False, on_change=reset_filter_state)
 
     # ── Filter Actions ───────────────────────────────────────────────────
+    btn_col1, btn_col2, _ = st.columns([1.3, 1.3, 7.4])
+
     btn_col1, btn_col2, _ = st.columns([1.3, 1.3, 7.4])
 
     with btn_col1:
@@ -762,6 +768,7 @@ if st.session_state.view == "game":
 
     with btn_col2:
         if st.button("🗑️ Remove Filters", use_container_width=True):
+            # Resetting everything back to defaults
             st.session_state.filters_applied = False
             st.session_state.filtered_plays = None
             st.rerun()
