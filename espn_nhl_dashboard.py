@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG & TITLE
 # =========================
 st.set_page_config(page_title="NHL Live", page_icon="🏒", layout="wide")
-st.title("🏒 NHL Dashboard")
+st.title("🏒 NHL Play by Play")
 
 st.components.v1.html("""
 <script>
