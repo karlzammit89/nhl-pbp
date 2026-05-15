@@ -309,8 +309,24 @@ ESPN_NO_PP_KEYWORDS = [
 def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
     """
     Fallback penalty parser using ESPN play text.
-    Only used when NHL API data is unavailable or incomplete.
+    Detects penalty events from ESPN play-by-play text format.
+
+    Sample ESPN penalty text formats observed:
+      "Tage Thompson Cross Checking (2 min)"
+      "Bowen Byram High Sticking (Double Minor - 4 min) drawn by ..."
+      "Brayden McNabb Interference (Major - 5 min)"
+      "Coincidental minors - Byram and Suzuki"
+
+    Detection strategy:
+      1. type.text contains "penalty"
+      2. Skip if text contains coincidental/offsetting keywords
+      3. Determine duration from multiple signals:
+         a) Keyword match (longest first: "double minor" before "minor")
+         b) Direct numeric: "(4 min)", "(2:00)", "(5 min)"
+         c) Default 120s (minor) if "penalty" but no duration found
     """
+    import re
+
     penalties = []
     for p in espn_plays:
         type_obj  = p.get("type", {})
@@ -320,11 +336,11 @@ def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
 
         text = (p.get("text") or "").lower()
 
-        # Skip no-PP situations
+        # Skip no-PP situations (coincidental, offsetting)
         if any(kw in text for kw in ESPN_NO_PP_KEYWORDS):
             continue
 
-        # Determine duration (longest match first)
+        # Determine duration from keyword match (longest first)
         duration = None
         is_dm = is_major = False
         for key, dur in ESPN_PENALTY_DURATIONS:
@@ -333,9 +349,28 @@ def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
                 is_dm    = (key == "double minor")
                 is_major = key in ("major", "match")
                 break
+
+        # Fallback: extract numeric duration from "(X min)" patterns
+        if duration is None:
+            m = re.search(r"\((\d+)\s*min\)", text) or re.search(r"\((\d+):00\)", text)
+            if m:
+                mins = int(m.group(1))
+                if mins == 4:
+                    duration = 240
+                    is_dm    = True
+                elif mins == 5:
+                    duration = 300
+                    is_major = True
+                elif mins == 10:
+                    duration = None    # misconduct, no PP
+                else:
+                    duration = 120     # default 2-min minor
+
+        # Final default — assume minor if nothing else
         if duration is None:
             duration = 120
-        if duration == 0 or duration is None:
+
+        if duration == 0:
             continue
 
         period_obj = p.get("period", {})
@@ -347,6 +382,9 @@ def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
         team_obj = p.get("team", {})
         pen_team_abbr = team_obj.get("abbreviation", "").upper() if isinstance(team_obj, dict) else ""
 
+        # Fallback: if team field missing, try to identify from text
+        # ESPN text usually starts with the penalised player; we don't have a
+        # name → team map, so we leave pen_side blank if abbr missing.
         if pen_team_abbr == away_abbr.upper():
             sit_label = "5v4 PP"
             pen_side  = "away"
@@ -401,7 +439,8 @@ def build_espn_pp_windows(espn_penalties, espn_plays):
             end = start + 240
             first_goal = next((t for t in pp_goal_times if start < t <= mid), None)
             if first_goal:
-                windows.append((start, first_goal, sit))
+                # Extend by 1s to include the goal-scoring moment in the PP
+                windows.append((start, first_goal + 1, sit))
                 windows.append((mid, end, sit))
             else:
                 windows.append((start, end, sit))
@@ -410,7 +449,9 @@ def build_espn_pp_windows(espn_penalties, espn_plays):
         else:
             end = start + dur
             first_goal = next((t for t in pp_goal_times if start < t <= end), None)
-            windows.append((start, first_goal if first_goal else end, sit))
+            # Extend by 1s to include the goal-scoring moment in the PP
+            end_time = (first_goal + 1) if first_goal else end
+            windows.append((start, end_time, sit))
 
     return windows
 
@@ -588,26 +629,138 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
             final_nhl.append(w)
     final_nhl = [(w[0], w[1], w[2]) for w in final_nhl if w[1] > w[0]]
 
-    # ── Phase 5: ESPN fallback for PPs the NHL API missed entirely ─────────
+    # ── Phase 5: Authoritative penalty-based override for wrong NHL data ───
+    # Build PP windows from BOTH NHL penalty data AND ESPN penalty text,
+    # then use these authoritative windows to override any NHL situation
+    # window that disagrees during the PP period.
+    #
+    # Why both sources:
+    #   - NHL details.duration is structured/reliable when present
+    #   - ESPN text catches penalties NHL API may have missed
+    #   - Combining gives maximum coverage
+    #
+    # Override is necessary (not just gap-fill) because the NHL API
+    # occasionally codes goal plays during a brief PP as 5v5, or adds
+    # spurious EN tags. The penalty list itself is the ground truth.
+
+    # ── Build authoritative PP windows from NHL penalty details ────────────
+    nhl_penalty_windows = []
+    if nhl_penalties:
+        # Use NHL goals to find PP-ending events (minor ends on goal)
+        nhl_pp_goals = sorted([
+            p["elapsed"] for p in sorted_plays
+            if p.get("type_key") == "goal" and "PP" in (p.get("situation") or "")
+        ])
+
+        for pen in nhl_penalties:
+            if pen["is_no_pp"]:
+                continue
+            start = pen["elapsed"]
+            dur   = pen["duration_sec"]
+            is_maj = pen["duration_min"] == 5
+            is_dm  = pen["duration_min"] == 4
+
+            sit_label = ("5v4 PP" if pen["pen_side"] == "away"
+                         else "4v5 PP" if pen["pen_side"] == "home"
+                         else "PP")
+
+            if is_dm:
+                # Double minor: two 2-min segments
+                mid = start + 120
+                end = start + 240
+                first_goal = next(
+                    (t for t in nhl_pp_goals if start < t <= mid),
+                    None
+                )
+                if first_goal:
+                    # Include the goal moment in the PP window (+1 second)
+                    nhl_penalty_windows.append((start, first_goal + 1, sit_label))
+                    nhl_penalty_windows.append((mid, end, sit_label))
+                else:
+                    nhl_penalty_windows.append((start, end, sit_label))
+            elif is_maj:
+                # Major: full 5 min regardless of goals
+                nhl_penalty_windows.append((start, start + dur, sit_label))
+            else:
+                # Minor: ends at duration OR first PP goal
+                # Include the goal moment in the PP window (+1 second)
+                end = start + dur
+                first_goal = next(
+                    (t for t in nhl_pp_goals if start < t <= end),
+                    None
+                )
+                end_time = (first_goal + 1) if first_goal else end
+                nhl_penalty_windows.append((start, end_time, sit_label))
+
+    # ── Build PP windows from ESPN penalty text ────────────────────────────
+    espn_wins = []
     if espn_plays and (away_abbr or home_abbr):
-        esp_pens  = parse_espn_penalties(espn_plays, away_abbr, home_abbr)
+        esp_pens = parse_espn_penalties(espn_plays, away_abbr, home_abbr)
         espn_wins = build_espn_pp_windows(esp_pens, espn_plays)
 
-        for (es, ee, esit) in espn_wins:
-            nhl_covers = any(
-                "PP" in nhl_sit and ns <= es + 30 and ne >= ee - 30
-                for (ns, ne, nhl_sit) in final_nhl
-            )
-            if nhl_covers:
-                continue
-            insert_pos = len(final_nhl)
-            for i, (ns, ne, _) in enumerate(final_nhl):
-                if ns >= es:
-                    insert_pos = i
-                    break
-            final_nhl.insert(insert_pos, (es, ee, esit))
+    # ── Merge authoritative windows from both sources ──────────────────────
+    # Strategy: any time covered by either source is treated as authoritative.
+    # If both agree, fine. If they disagree, prefer the NHL source (more
+    # specific situation code via duration).
+    authoritative = list(nhl_penalty_windows)
 
-        final_nhl.sort(key=lambda w: w[0])
+    for (es, ee, esit) in espn_wins:
+        # Skip if NHL penalty windows already cover this range
+        covered_by_nhl = any(
+            ns <= es + 5 and ne >= ee - 5
+            for (ns, ne, _) in nhl_penalty_windows
+        )
+        if covered_by_nhl:
+            continue
+        authoritative.append((es, ee, esit))
+
+    authoritative.sort(key=lambda w: w[0])
+
+    # ── Override Phase 4 windows with authoritative penalty windows ────────
+    # For each authoritative PP window, override any overlapping NHL
+    # situation window that says 5v5 or has implausible EN tags during
+    # what should be a PP.
+    nhl_windows = [list(w) for w in final_nhl]
+
+    for (es, ee, esit) in authoritative:
+        new_windows = []
+        for (ns, ne, nsit) in nhl_windows:
+            if ne <= es or ns >= ee:
+                # No overlap → keep as-is
+                new_windows.append([ns, ne, nsit])
+                continue
+
+            # NHL window already says PP with no EN → trust NHL's specifics
+            if "PP" in nsit and "EN" not in nsit:
+                new_windows.append([ns, ne, nsit])
+                continue
+
+            # Override the overlapping portion:
+            #   pre  = NHL portion before PP starts
+            #   mid  = overlap → replaced with ESPN PP label
+            #   post = NHL portion after PP ends
+            pre_start, pre_end   = ns, max(ns, es)
+            mid_start, mid_end   = max(ns, es), min(ne, ee)
+            post_start, post_end = min(ne, ee), ne
+
+            if pre_end > pre_start:
+                new_windows.append([pre_start, pre_end, nsit])
+            if mid_end > mid_start:
+                new_windows.append([mid_start, mid_end, esit])
+            if post_end > post_start:
+                new_windows.append([post_start, post_end, nsit])
+
+        nhl_windows = new_windows
+
+    # Sort and re-merge adjacent same-situation windows after overrides
+    nhl_windows.sort(key=lambda w: w[0])
+    re_merged = []
+    for w in nhl_windows:
+        if re_merged and re_merged[-1][2] == w[2]:
+            re_merged[-1][1] = w[1]
+        else:
+            re_merged.append(list(w))
+    final_nhl = [(w[0], w[1], w[2]) for w in re_merged if w[1] > w[0]]
 
     return final_nhl
 
