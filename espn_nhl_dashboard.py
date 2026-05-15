@@ -1089,23 +1089,17 @@ if st.session_state.view == "game":
     # replaces ~5 individual st.markdown calls per play with one,
     # cutting Streamlit element count by ~80% for faster rerenders
     for p in display_list:
-        emoji   = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
-        sit     = p.get("situation", "")
-        wall_et = p.get("wall_et", "")
-        strength_row = f'<p style="margin:12px 0;font-size:1rem">⚖️ <b>Strength:</b> {sit}</p>' if sit else ""
-        time_row     = (
-            f'<p style="margin:12px 0;font-size:1rem">🕐 <b>Time (ET)</b> '
-            f'<span style="background:#1b5e20;color:#a5d6a7;padding:2px 8px;border-radius:4px;font-size:0.85rem">{wall_et}</span></p>'
-        ) if wall_et and wall_et != "N/A" else ""
-        st.markdown(f"""
-<h2 style="margin:20px 0 14px 0;font-size:1.8rem;font-weight:700">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</h2>
-<p style="margin:12px 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
-<p style="margin:12px 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
-{strength_row}
-<p style="margin:12px 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
-{time_row}
-<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:24px 0 4px 0"/>
-""", unsafe_allow_html=True)
+        emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+        st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
+        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+        st.markdown(f"🎯 **Event:** {p.get('type_text')}")
+        sit = p.get("situation", "")
+        if sit:
+            st.markdown(f"⚖️ **Strength:** `{sit}`")
+        st.markdown(f"📋 **Play:** {p.get('text')}")
+        if p.get("wall_et") and p.get("wall_et") != "N/A":
+            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+        st.divider()
 
 # ======================================================
 # SCHEDULE VIEW
