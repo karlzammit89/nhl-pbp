@@ -49,6 +49,7 @@ for k, v in {
     "game_state": "",
     "filters_applied": False,
     "filtered_plays": None,
+    "active_filter_snapshot": {},
     "cached_plays": None,
     "cached_event_id": None,
     "last_refresh": datetime.now(ET),
@@ -931,6 +932,7 @@ if st.session_state.view == "game":
             st.rerun()
     with nav_col2:
         if st.button("🔄 Refresh", use_container_width=True):
+            fetch_nhl_plays.clear()          # bust Streamlit @st.cache_data
             st.session_state.cached_plays    = None
             st.session_state.cached_event_id = None
             st.rerun()
@@ -1025,53 +1027,83 @@ if st.session_state.view == "game":
                 return True
             st.session_state.filtered_plays  = [p for p in plays if passes(p)]
             st.session_state.filters_applied = True
+            # Snapshot which filters were active at Apply time —
+            # info labels only read from this, not live checkbox state
+            st.session_state.active_filter_snapshot = {
+                "period":     USE_PERIOD_FILTER,
+                "periods":    list(selected_periods),
+                "time":       USE_TIME_FILTER,
+                "start_dt":   START_DT,
+                "end_dt":     END_DT,
+                "goals":      USE_GOAL_FILTER,
+                "pp":         USE_PP_FILTER,
+                "en":         USE_GP_FILTER,
+            }
             st.rerun()
 
     with btn_col2:
         def reset_filters():
-            st.session_state.filters_applied = False
-            st.session_state.filtered_plays  = None
+            st.session_state.filters_applied        = False
+            st.session_state.filtered_plays         = None
+            st.session_state.active_filter_snapshot = {}
             st.session_state.cb_period = False
             st.session_state.cb_time   = False
             st.session_state.cb_goals  = False
             st.session_state.cb_pp     = False
             st.session_state.cb_en     = False
-        st.button("🗑️ Remove Filters", use_container_width=True, on_click=reset_filters)
+        # Disabled when no filters are active (fix #3)
+        filters_currently_applied = st.session_state.get("filters_applied", False)
+        st.button(
+            "🗑️ Remove Filters",
+            use_container_width=True,
+            on_click=reset_filters,
+            disabled=not filters_currently_applied,
+        )
 
     filters_applied = st.session_state.get("filters_applied")
     display_list    = st.session_state.filtered_plays if filters_applied else plays
     total   = len(plays)
     showing = len(display_list)
 
+    # Info labels read from snapshot (fix #4) — only shows filters
+    # that were active when Apply was last pressed, not current checkboxes
     if filters_applied:
+        snap = st.session_state.get("active_filter_snapshot", {})
         if showing == 0:
             st.warning("⚠️ No results found — please check the filters applied.")
             st.stop()
-        if USE_PERIOD_FILTER:
-            labels = selected_periods if selected_periods else ["none selected"]
+        if snap.get("period"):
+            labels = snap["periods"] if snap["periods"] else ["none selected"]
             st.info(f"🏒 **Period filter:** {', '.join(labels)} — showing **{showing}** of **{total}** plays")
-        if USE_TIME_FILTER:
-            st.info(f"🕐 **Time filter:** {START_DT.strftime('%Y-%m-%d %H:%M')} → {END_DT.strftime('%Y-%m-%d %H:%M')} ET — showing **{showing}** of **{total}** plays")
-        if USE_GOAL_FILTER:
+        if snap.get("time") and snap.get("start_dt") and snap.get("end_dt"):
+            st.info(f"🕐 **Time filter:** {snap['start_dt'].strftime('%Y-%m-%d %H:%M')} → {snap['end_dt'].strftime('%Y-%m-%d %H:%M')} ET — showing **{showing}** of **{total}** plays")
+        if snap.get("goals"):
             n_goals = sum(1 for p in plays if p["type_text"] == "Goal")
             st.info(f"🚨 **Goals Only:** {n_goals} goal(s) in game — showing **{showing}** of **{total}** plays")
-        if USE_PP_FILTER:
+        if snap.get("pp"):
             st.info(f"⚡ **Power Plays Only:** showing **{showing}** of **{total}** plays")
-        if USE_GP_FILTER:
+        if snap.get("en"):
             st.info(f"🥅 **Empty Nets Only:** showing **{showing}** of **{total}** plays")
 
+    # Render plays as single HTML block per play (fix #1) —
+    # replaces ~5 individual st.markdown calls per play with one,
+    # cutting Streamlit element count by ~80% for faster rerenders
     for p in display_list:
-        emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
-        st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
-        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
-        st.markdown(f"🎯 **Event:** {p.get('type_text')}")
-        sit = p.get("situation", "")
-        if sit:
-            st.markdown(f"⚖️ **Strength:** `{sit}`")
-        st.markdown(f"📋 **Play:** {p.get('text')}")
-        if p.get("wall_et") and p.get("wall_et") != "N/A":
-            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
-        st.divider()
+        emoji   = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+        sit     = p.get("situation", "")
+        wall_et = p.get("wall_et", "")
+        strength_row = f'<p style="margin:2px 0">⚖️ <b>Strength:</b> <code>{sit}</code></p>' if sit else ""
+        time_row     = f'<p style="margin:2px 0">🕐 <b>Time (ET):</b> <code>{wall_et}</code></p>' if wall_et and wall_et != "N/A" else ""
+        st.markdown(f"""
+<div style="border-bottom:1px solid rgba(255,255,255,0.1);padding:10px 0 12px 0;margin-bottom:4px">
+  <h3 style="margin:0 0 6px 0;font-size:1.1rem">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</h3>
+  <p style="margin:2px 0">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
+  <p style="margin:2px 0">🎯 <b>Event:</b> {p.get('type_text')}</p>
+  {strength_row}
+  <p style="margin:2px 0">📋 <b>Play:</b> {p.get('text')}</p>
+  {time_row}
+</div>
+""", unsafe_allow_html=True)
 
 # ======================================================
 # SCHEDULE VIEW
