@@ -1092,16 +1092,16 @@ if st.session_state.view == "game":
         emoji   = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
         sit     = p.get("situation", "")
         wall_et = p.get("wall_et", "")
-        strength_row = f'<p style="margin:4px 0">⚖️ <b>Strength:</b> <code>{sit}</code></p>' if sit else ""
-        time_row     = f'<p style="margin:4px 0">🕐 <b>Time (ET):</b> <code style="color:#4fc3f7">{wall_et}</code></p>' if wall_et and wall_et != "N/A" else ""
+        strength_row = f'<p style="margin:8px 0;font-size:1rem">⚖️ <b>Strength:</b> {sit}</p>' if sit else ""
+        time_row     = f'<p style="margin:8px 0;font-size:1rem">🕐 <b>Time (ET)</b> <span style="color:#4fc3f7">{wall_et}</span></p>' if wall_et and wall_et != "N/A" else ""
         st.markdown(f"""
-<h3 style="margin:0 0 8px 0">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</h3>
-<p style="margin:4px 0">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
-<p style="margin:4px 0">🎯 <b>Event:</b> {p.get('type_text')}</p>
+<h2 style="margin:16px 0 12px 0;font-size:1.8rem;font-weight:700">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</h2>
+<p style="margin:8px 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
+<p style="margin:8px 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
 {strength_row}
-<p style="margin:4px 0">📋 <b>Play:</b> {p.get('text')}</p>
+<p style="margin:8px 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
 {time_row}
-<hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:16px 0 8px 0"/>
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:20px 0 4px 0"/>
 """, unsafe_allow_html=True)
 
 # ======================================================
