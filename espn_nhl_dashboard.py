@@ -60,7 +60,7 @@ for k, v in {
 # =========================
 # HELPERS
 # =========================
-def to_et(raw: str):
+def to_et(raw):
     if not raw:
         return None
     try:
@@ -68,110 +68,90 @@ def to_et(raw: str):
     except Exception:
         return None
 
-def fmt_et_full(raw: str) -> str:
+def fmt_et_full(raw):
     dt = to_et(raw)
     if not dt:
         return "N/A"
     label = "EDT" if dt.dst() != timedelta(0) else "EST"
     return dt.strftime(f"%Y-%m-%d %H:%M:%S {label}")
 
-def fmt_game_time(dt) -> str:
+def fmt_game_time(dt):
     return dt.strftime("%H:%M ET") if dt else "TBD"
 
-def get_play_emoji(type_str: str) -> str:
+def get_play_emoji(type_str):
     t = (type_str or "").lower()
     for k, v in PLAY_EMOJI.items():
         if k in t:
             return v
     return "🏒"
 
-def period_label(period_num, period_type: str = "") -> str:
-    if "overtime" in (period_type or "").lower() or (isinstance(period_num, int) and period_num > 3):
+def period_label(period_num, period_type=""):
+    pt = (period_type or "").lower()
+    if "overtime" in pt or (isinstance(period_num, int) and period_num > 3):
         ot_num = period_num - 3
         return f"OT{ot_num}" if ot_num > 1 else "OT"
-    if "shootout" in (period_type or "").lower():
+    if "shootout" in pt:
         return "SO"
     return f"P{period_num}"
 
-def espn_clock_to_seconds(clock_str: str, period_num: int) -> int:
-    """
-    ESPN NHL clock counts UP from 0:00 (elapsed).
-    e.g. "02:23" = 2min 23sec into the period.
-    Returns: period_offset + elapsed_in_period
-    """
+def espn_clock_to_seconds(clock_str, period_num):
+    """ESPN clock counts UP from 0:00 (elapsed)."""
     try:
-        parts = clock_str.strip().split(":")
-        mins, secs = int(parts[0]), int(parts[1])
-        elapsed = mins * 60 + secs
+        mm, ss = clock_str.strip().split(":")
+        elapsed = int(mm) * 60 + int(ss)
     except Exception:
         elapsed = 0
     return (period_num - 1) * 1200 + elapsed
 
-def nhl_clock_to_seconds(time_in_period: str, period_num: int) -> int:
-    """
-    NHL clock counts DOWN from 20:00 (time remaining).
-    e.g. "14:48" means 5min 12sec elapsed.
-    Returns: period_offset + (1200 - remaining_secs)
-    """
+def nhl_clock_to_seconds(time_in_period, period_num):
+    """NHL clock counts DOWN from 20:00 (remaining)."""
     try:
-        parts = time_in_period.strip().split(":")
-        mins, secs = int(parts[0]), int(parts[1])
-        elapsed = 1200 - (mins * 60 + secs)
+        mm, ss = time_in_period.strip().split(":")
+        elapsed = 1200 - (int(mm) * 60 + int(ss))
     except Exception:
         elapsed = 0
     return (period_num - 1) * 1200 + elapsed
 
-def parse_nhl_situation(sit_code: str) -> str:
+def parse_nhl_situation(sit_code):
     """
     Parse NHL situation code: [away_goalie][away_sk][home_sk][home_goalie]
-    Goalie: '1'=in net, '0'=pulled (EN). Skaters 1-6 (6=extra attacker).
-    Returns e.g. '5v5', '4v5 PP', '6v5 Away EN PP', '5v5 Home EN'
+    Returns e.g. '5v5', '4v5 PP', '6v5 Away EN PP'
     """
     if not sit_code or len(sit_code) < 4:
         return ""
-    away_g  = sit_code[0]
-    away_sk = sit_code[1]
-    home_sk = sit_code[2]
-    home_g  = sit_code[3]
     try:
-        a = int(away_sk)
-        h = int(home_sk)
+        a = int(sit_code[1])
+        h = int(sit_code[2])
     except ValueError:
         return ""
-
-    is_away_en = (away_g == "0")
-    is_home_en = (home_g == "0")
-    is_pp      = (a != h)
-
-    parts = [f"{a}v{h}"]
-    if is_away_en and is_home_en:
+    away_en = sit_code[0] == "0"
+    home_en = sit_code[3] == "0"
+    is_pp   = a != h
+    parts   = [f"{a}v{h}"]
+    if away_en and home_en:
         parts.append("Both EN")
-    elif is_away_en:
+    elif away_en:
         parts.append("Away EN")
-    elif is_home_en:
+    elif home_en:
         parts.append("Home EN")
     if is_pp:
         parts.append("PP")
-
     return " ".join(parts)
 
 # =========================
 # NHL GAME ID LOOKUP
 # =========================
 @st.cache_data(ttl=3600, show_spinner=False)
-def find_nhl_game_id(date_str: str, away_abbr: str, home_abbr: str) -> str:
+def find_nhl_game_id(date_str, away_abbr, home_abbr):
     try:
-        resp = requests.get(f"{NHL_SCHEDULE}/{date_str}", timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+        data = requests.get(f"{NHL_SCHEDULE}/{date_str}", timeout=10).json()
     except Exception:
         return ""
-
-    target_date = datetime.fromisoformat(date_str).date()
+    target = datetime.fromisoformat(date_str).date()
     for day in data.get("gameWeek", []):
         for g in day.get("games", []):
-            start_dt = to_et(g.get("startTimeUTC", ""))
-            if start_dt and start_dt.date() != target_date:
+            dt = to_et(g.get("startTimeUTC", ""))
+            if dt and dt.date() != target:
                 continue
             nhl_away = g.get("awayTeam", {}).get("abbrev", "").upper()
             nhl_home = g.get("homeTeam", {}).get("abbrev", "").upper()
@@ -179,105 +159,294 @@ def find_nhl_game_id(date_str: str, away_abbr: str, home_abbr: str) -> str:
                 return str(g.get("id", ""))
     return ""
 
-def _abbr_match(espn_abbr: str, nhl_abbr: str) -> bool:
-    espn_abbr = espn_abbr.upper()
-    nhl_abbr  = nhl_abbr.upper()
-    if espn_abbr == nhl_abbr:
+def _abbr_match(a, b):
+    a, b = a.upper(), b.upper()
+    if a == b:
         return True
     KNOWN = {
-        "VGK": ["VEG", "VGK", "LV"],
-        "VEG": ["VGK", "VEG", "LV"],
-        "LV":  ["VGK", "VEG"],
-        "UTA": ["UTAH", "UTA"],
-        "WSH": ["WAS", "WSH"],
-        "WAS": ["WSH", "WAS"],
-        "CLB": ["CBJ", "CLB"],
-        "CBJ": ["CLB", "CBJ"],
+        "VGK": ["VEG","VGK","LV"], "VEG": ["VGK","VEG","LV"], "LV": ["VGK","VEG"],
+        "UTA": ["UTAH","UTA"], "WSH": ["WAS","WSH"], "WAS": ["WSH","WAS"],
+        "CLB": ["CBJ","CLB"], "CBJ": ["CLB","CBJ"],
     }
-    aliases = KNOWN.get(espn_abbr, []) + KNOWN.get(nhl_abbr, [])
-    return espn_abbr in aliases or nhl_abbr in aliases
+    return a in KNOWN.get(b, []) or b in KNOWN.get(a, [])
 
 # =========================
 # NHL PLAY-BY-PLAY FETCH
 # =========================
+# Penalty types that do NOT create a power play:
+NO_PP_PENALTY_TYPES = {
+    "misconduct",       # 10-min, player replaced
+    "game-misconduct",  # rest of game, player replaced
+    "fighting",         # offsetting, 5v5 continues unless one side has more
+}
+
 @st.cache_data(ttl=30, show_spinner=False)
-def fetch_nhl_plays(nhl_game_id: str) -> list:
+def fetch_nhl_plays(nhl_game_id):
+    """
+    Fetch NHL play-by-play and parse plays + penalty details.
+    Returns dict with:
+      - plays: list of plays with sit_code/situation
+      - penalties: list of penalty details (duration, type, team)
+      - teams: {'away_id': ..., 'home_id': ...}
+    """
     if not nhl_game_id:
-        return []
+        return {"plays": [], "penalties": [], "teams": {}}
     try:
         resp = requests.get(f"{NHL_PBP}/{nhl_game_id}/play-by-play", timeout=10)
         resp.raise_for_status()
-        plays = resp.json().get("plays", [])
+        data = resp.json()
     except Exception:
-        return []
+        return {"plays": [], "penalties": [], "teams": {}}
 
-    result = []
-    for p in plays:
+    teams = {
+        "away_id": data.get("awayTeam", {}).get("id"),
+        "home_id": data.get("homeTeam", {}).get("id"),
+        "away_abbr": (data.get("awayTeam", {}).get("abbrev") or "").upper(),
+        "home_abbr": (data.get("homeTeam", {}).get("abbrev") or "").upper(),
+    }
+
+    plays = []
+    penalties = []
+
+    for p in data.get("plays", []):
         pd       = p.get("periodDescriptor", {})
         pnum     = pd.get("number", 1)
+        ptype    = pd.get("periodType", "REG")
         tip      = p.get("timeInPeriod", "20:00")
         sit      = p.get("situationCode") or ""
         type_key = p.get("typeDescKey", "")
-        result.append({
+        details  = p.get("details") or {}
+
+        elapsed = nhl_clock_to_seconds(tip, pnum)
+
+        plays.append({
             "period":     pnum,
-            "elapsed":    nhl_clock_to_seconds(tip, pnum),
+            "period_type":ptype,
+            "elapsed":    elapsed,
             "time_in":    tip,
             "type_key":   type_key,
             "sit_code":   sit,
             "situation":  parse_nhl_situation(sit),
             "sort_order": p.get("sortOrder", 0),
         })
-    return result
+
+        # Extract penalty details — NHL API gives us the duration directly
+        if type_key in ("penalty", "delayed-penalty"):
+            desc_key       = (details.get("descKey") or "").lower()
+            duration_min   = details.get("duration")   # already in minutes
+            committed_id   = details.get("committedByPlayerId")
+            event_team_id  = details.get("eventOwnerTeamId")  # team that took penalty
+
+            # Determine penalty side
+            pen_side = ""
+            if event_team_id == teams["away_id"]:
+                pen_side = "away"
+            elif event_team_id == teams["home_id"]:
+                pen_side = "home"
+
+            penalties.append({
+                "elapsed":      elapsed,
+                "period":       pnum,
+                "period_type":  ptype,
+                "desc_key":     desc_key,                  # e.g. "high-sticking"
+                "duration_min": duration_min,              # 2, 4, 5, 10
+                "duration_sec": (duration_min or 2) * 60,
+                "pen_side":     pen_side,                  # "away" or "home"
+                "is_no_pp":     desc_key in NO_PP_PENALTY_TYPES,
+                "type_key":     type_key,
+                "sort_order":   p.get("sortOrder", 0),
+            })
+
+    return {"plays": plays, "penalties": penalties, "teams": teams}
+
+# =========================
+# COINCIDENTAL PENALTY DETECTION
+# =========================
+def detect_coincidental_penalties(penalties):
+    """
+    NHL rule: when both teams take penalties at the same stoppage with
+    matching minor durations, they are 'coincidental' — no PP, just 4v4.
+
+    Mark coincidental pairs as is_no_pp=True so they're excluded from
+    PP window generation. Penalties within 2 seconds of each other on
+    opposing teams with the same duration are considered coincidental.
+    """
+    for i, p in enumerate(penalties):
+        if p["is_no_pp"]:
+            continue
+        for j, q in enumerate(penalties):
+            if i == j or q["is_no_pp"]:
+                continue
+            if (p["pen_side"] != q["pen_side"]
+                and p["pen_side"] and q["pen_side"]
+                and abs(p["elapsed"] - q["elapsed"]) <= 2
+                and p["duration_min"] == q["duration_min"]
+                and p["duration_min"] in (2, 4)):  # minors / double minors coincide
+                # Mark both as coincidental
+                p["is_no_pp"]   = True
+                p["coincident"] = True
+                q["is_no_pp"]   = True
+                q["coincident"] = True
+    return penalties
+
+# =========================
+# ESPN PENALTY PARSER (FALLBACK)
+# =========================
+ESPN_PENALTY_DURATIONS = [
+    ("double minor",    240),
+    ("game misconduct", None),
+    ("misconduct",      None),
+    ("major",           300),
+    ("match",           300),
+    ("bench minor",     120),
+    ("minor",           120),
+]
+ESPN_NO_PP_KEYWORDS = [
+    "coincidental", "offsetting", "matching penalties",
+    "double minor to each", "roughing to each",
+]
+
+def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
+    """
+    Fallback penalty parser using ESPN play text.
+    Only used when NHL API data is unavailable or incomplete.
+    """
+    penalties = []
+    for p in espn_plays:
+        type_obj  = p.get("type", {})
+        type_text = (type_obj.get("text", "") if isinstance(type_obj, dict) else "").lower()
+        if "penalty" not in type_text:
+            continue
+
+        text = (p.get("text") or "").lower()
+
+        # Skip no-PP situations
+        if any(kw in text for kw in ESPN_NO_PP_KEYWORDS):
+            continue
+
+        # Determine duration (longest match first)
+        duration = None
+        is_dm = is_major = False
+        for key, dur in ESPN_PENALTY_DURATIONS:
+            if key in text:
+                duration = dur
+                is_dm    = (key == "double minor")
+                is_major = key in ("major", "match")
+                break
+        if duration is None:
+            duration = 120
+        if duration == 0 or duration is None:
+            continue
+
+        period_obj = p.get("period", {})
+        pnum       = period_obj.get("number", 1) if isinstance(period_obj, dict) else 1
+        clock_obj  = p.get("clock", {})
+        clock_val  = clock_obj.get("displayValue", "0:00") if isinstance(clock_obj, dict) else "0:00"
+        elapsed    = espn_clock_to_seconds(clock_val, pnum)
+
+        team_obj = p.get("team", {})
+        pen_team_abbr = team_obj.get("abbreviation", "").upper() if isinstance(team_obj, dict) else ""
+
+        if pen_team_abbr == away_abbr.upper():
+            sit_label = "5v4 PP"
+            pen_side  = "away"
+        elif pen_team_abbr == home_abbr.upper():
+            sit_label = "4v5 PP"
+            pen_side  = "home"
+        else:
+            sit_label = "PP"
+            pen_side  = ""
+
+        penalties.append({
+            "elapsed":      elapsed,
+            "period":       pnum,
+            "duration_sec": duration,
+            "sit_label":    sit_label,
+            "is_dm":        is_dm,
+            "is_major":     is_major,
+            "pen_side":     pen_side,
+        })
+    return penalties
+
+def build_espn_pp_windows(espn_penalties, espn_plays):
+    """
+    Build PP windows from ESPN penalty data using NHL rules.
+    Minor: ends at +120s OR first PP goal.
+    Double minor: first goal ends first 2-min half; second half always runs full.
+    Major: full 5 min regardless of goals.
+    """
+    if not espn_penalties:
+        return []
+
+    pp_goal_times = []
+    for p in espn_plays:
+        text      = (p.get("text") or "").lower()
+        type_obj  = p.get("type", {})
+        type_text = (type_obj.get("text", "") if isinstance(type_obj, dict) else "").lower()
+        if "goal" in type_text and "power play" in text:
+            period_obj = p.get("period", {})
+            pnum       = period_obj.get("number", 1) if isinstance(period_obj, dict) else 1
+            clock_obj  = p.get("clock", {})
+            clock_val  = clock_obj.get("displayValue", "0:00") if isinstance(clock_obj, dict) else "0:00"
+            pp_goal_times.append(espn_clock_to_seconds(clock_val, pnum))
+    pp_goal_times.sort()
+
+    windows = []
+    for pen in sorted(espn_penalties, key=lambda x: x["elapsed"]):
+        start = pen["elapsed"]
+        dur   = pen["duration_sec"]
+        sit   = pen["sit_label"]
+        if pen["is_dm"]:
+            mid = start + 120
+            end = start + 240
+            first_goal = next((t for t in pp_goal_times if start < t <= mid), None)
+            if first_goal:
+                windows.append((start, first_goal, sit))
+                windows.append((mid, end, sit))
+            else:
+                windows.append((start, end, sit))
+        elif pen["is_major"]:
+            windows.append((start, start + dur, sit))
+        else:
+            end = start + dur
+            first_goal = next((t for t in pp_goal_times if start < t <= end), None)
+            windows.append((start, first_goal if first_goal else end, sit))
+
+    return windows
 
 # =========================
 # SITUATION WINDOW BUILDER
 # =========================
-ESPN_TO_NHL_TYPE = {
-    "goal":         ["goal"],
-    "penalty":      ["penalty", "delayed-penalty"],
-    "shot on goal": ["shot-on-goal"],
-    "blocked shot": ["blocked-shot"],
-    "missed shot":  ["missed-shot"],
-    "faceoff":      ["faceoff"],
-    "hit":          ["hit"],
-    "giveaway":     ["giveaway"],
-    "takeaway":     ["takeaway"],
-    "stoppage":     ["stoppage"],
-    "period start": ["period-start"],
-    "period end":   ["period-end"],
-}
-
-def espn_type_to_nhl(espn_type: str) -> list:
-    t = (espn_type or "").lower().strip()
-    for key, nhl_keys in ESPN_TO_NHL_TYPE.items():
-        if key in t:
-            return nhl_keys
-    return []
-
-def build_situation_windows(nhl_plays: list) -> list:
+def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr=""):
     """
-    Build gapless situation windows from NHL play-by-play data.
+    Build gapless situation windows using a hybrid approach.
 
-    NHL rules embedded in this logic:
-    - PP requires a penalty — validated in Phase 4
-    - 5-minute majors create up to 300s of PP, even after a goal is scored
-      (unlike 2-min minors where scoring ends the PP)
-    - EN requires no penalty — team can pull goalie any time
-    - Carry-over PPs from previous period are valid
+    PRIMARY: NHL API situationCode (most accurate)
+      Phase 1: Build raw windows from every NHL play
+      Phase 2: Patch period-start carry-over windows
+      Phase 2b: Gap-fill PP windows from NHL penalty data when sit codes missing
+      Phase 3: Merge adjacent same-situation windows
+      Phase 4: Validate PP windows (penalty required, min duration)
 
-    Four phases:
-    1. Build raw gapless windows from every play
-    2. Patch period-start boundary windows for carry-over PPs
-    3. Merge adjacent same-situation windows (eliminate fragmentation)
-    4. Validate PP windows: must have causative penalty within lookback window
-       and minimum duration to filter out NHL API data artifacts
+    FALLBACK: ESPN penalty text
+      Phase 5: For penalties the NHL API missed entirely, use ESPN penalty
+               windows to fill gaps. NHL always wins where both have data.
     """
+    nhl_plays      = nhl_data.get("plays", [])
+    nhl_penalties  = nhl_data.get("penalties", [])
+
+    # Mark coincidental penalties as no-PP
+    nhl_penalties = detect_coincidental_penalties(list(nhl_penalties))
+
     if not nhl_plays:
+        # No NHL data at all — fall back to pure ESPN
+        if espn_plays:
+            esp_pens = parse_espn_penalties(espn_plays, away_abbr, home_abbr)
+            return build_espn_pp_windows(esp_pens, espn_plays)
         return []
 
     BOUNDARY_TYPES = {
-        "period-start", "period-end",
-        "game-start",   "game-end",
+        "period-start", "period-end", "game-start", "game-end",
         "shootout-start", "shootout-end",
     }
 
@@ -310,9 +479,6 @@ def build_situation_windows(nhl_plays: list) -> list:
         raw_windows.append([win_start, 99999, win_sit_code, win_sit, win_boundary])
 
     # ── Phase 2: patch period-start carry-over windows ────────────────────
-    # A PP that started in P1 carries into P2. The period-start event logs
-    # sit='1551' but the first real PP play follows immediately.
-    # Patch the boundary window to show the actual carry-over situation.
     period_starts = {
         p["elapsed"] for p in sorted_plays
         if p.get("type_key", "") == "period-start"
@@ -329,63 +495,46 @@ def build_situation_windows(nhl_plays: list) -> list:
         if next_real and next_real[2] != w_sit_code and next_real[0] - w_start <= 60:
             raw_windows[i][3] = next_real[3]
 
-    # ── Phase 2b: gap-fill missing PP windows from penalty plays ──────────
-    # Root cause: the NHL API sometimes logs a penalty play but then logs
-    # ZERO plays with the resulting PP situation code. Phase 1 never sees
-    # a sit code change so no PP window is created, even though a real PP
-    # occurred on the ice.
-    #
-    # Fix: for every penalty play, check if a PP window already covers the
-    # expected PP timeframe. If not, look for any play logged AFTER the
-    # penalty that has a PP situation code and use it to synthesise a window.
-    penalty_plays = [
-        p for p in sorted_plays
-        if p.get("type_key", "") in ("penalty", "delayed-penalty")
-    ]
-    for pen in penalty_plays:
-        pen_e            = pen["elapsed"]
-        pp_expected_end  = pen_e + 360   # max 5-min major + buffer
+    # ── Phase 2b: gap-fill PP windows from penalty data ────────────────────
+    # For every penalty that gave a real PP, check if a PP window covers it.
+    # If not, look for ANY play with a PP sit code after the penalty and
+    # use it to synthesise the window.
+    for pen in nhl_penalties:
+        if pen["is_no_pp"]:
+            continue
+        pen_e   = pen["elapsed"]
+        expect_end = pen_e + pen["duration_sec"] + 60   # PP duration + buffer
 
-        # Check if any existing raw window already covers this penalty's PP
         covered = any(
-            "PP" in w[3]
-            and w[0] <= pp_expected_end
-            and w[1] >= pen_e
+            "PP" in w[3] and w[0] <= expect_end and w[1] >= pen_e
             for w in raw_windows
         )
         if covered:
             continue
 
-        # No PP window exists — find the first play with a PP sit code
-        # that occurs after this penalty and within the expected window
         first_pp = next(
             (p for p in sorted_plays
              if p["elapsed"] > pen_e
-             and p["elapsed"] <= pp_expected_end
+             and p["elapsed"] <= expect_end
              and "PP" in p["situation"]),
             None
         )
         if not first_pp:
-            continue  # truly no PP data — skip
+            continue
 
-        # Find where the PP ends (first non-PP play after the PP starts)
         synth_end = next(
             (p["elapsed"] for p in sorted_plays
-             if p["elapsed"] > first_pp["elapsed"]
-             and "PP" not in p["situation"]),
-            first_pp["elapsed"] + 120
+             if p["elapsed"] > first_pp["elapsed"] and "PP" not in p["situation"]),
+            first_pp["elapsed"] + pen["duration_sec"]
         )
 
-        # Insert synthesised window — it will be merged in Phase 3
         synth = [first_pp["elapsed"], synth_end,
                  first_pp["sit_code"], first_pp["situation"], False]
-        inserted = False
         for i, w in enumerate(raw_windows):
             if w[0] >= synth[0]:
                 raw_windows.insert(i, synth)
-                inserted = True
                 break
-        if not inserted:
+        else:
             raw_windows.append(synth)
 
     # ── Phase 3: merge adjacent same-situation windows ────────────────────
@@ -396,117 +545,100 @@ def build_situation_windows(nhl_plays: list) -> list:
             merged[-1][1] = w[1]
         else:
             merged.append([w[0], w[1], sit_str])
-
-    # Remove zero-duration windows — unreachable by [start, end) lookup
     merged = [w for w in merged if w[1] > w[0]]
 
     # ── Phase 4: validate PP windows against NHL rules ─────────────────────
-    #
-    # Check A — Minimum duration (5 seconds):
-    #   Only drops near-zero API artifacts. 5s chosen (not 30s) because:
-    #   - During a 5-min major, a PP goal is scored but PP CONTINUES
-    #   - NHL API briefly logs a different sit code at the goal moment
-    #   - This creates valid sub-windows of 10-20s that must NOT be dropped
-    #   - Only genuine zero-duration artifacts (< 5s) should be discarded
-    #
-    # Check B — Penalty validation (360 second lookback):
-    #   Every PP window must have a penalty logged within 360s before it starts
-    #   OR within 60s after it starts (for period carry-overs).
-    #   360s = 300s (max 5-min major) + 60s (faceoff delay buffer).
-    #   This correctly validates all PP types:
-    #     - 2-min minors: penalty within 120s before PP faceoff
-    #     - 5-min majors: penalty within 360s before any sub-window
-    #     - Carry-over PPs: penalty found within 60s after period start
-    #   EN windows are NOT validated — pulling goalie requires no penalty.
+    # Check A: minimum duration 5s (drop near-zero artifacts only)
+    # Check B: must have a non-coincidental penalty within lookback range
+    MIN_PP_DURATION    = 5
+    MAX_PENALTY_LOOKBACK = 360  # 5-min major + buffer
 
-    MIN_PP_DURATION    = 5    # seconds — only drop near-zero API artifacts
-    MAX_PENALTY_LOOKBACK = 360  # seconds — covers 5-min majors + faceoff delay
+    # Use only non-coincidental penalties for validation
+    valid_penalty_times = sorted(
+        p["elapsed"] for p in nhl_penalties if not p["is_no_pp"]
+    )
 
-    penalty_elapsed_times = sorted([
-        p["elapsed"] for p in sorted_plays
-        if p.get("type_key", "") in ("penalty", "delayed-penalty")
-    ])
-
-    def has_valid_penalty(win_start: int) -> bool:
-        lookback_start = win_start - MAX_PENALTY_LOOKBACK
-        lookahead_end  = win_start + 60
-        return any(lookback_start <= t <= lookahead_end for t in penalty_elapsed_times)
+    def has_valid_penalty(win_start):
+        lo = win_start - MAX_PENALTY_LOOKBACK
+        hi = win_start + 60
+        return any(lo <= t <= hi for t in valid_penalty_times)
 
     validated = []
     for w in merged:
         w_start, w_end, w_sit = w
-        duration = w_end - w_start if w_end < 99999 else 9999
-        is_pp    = "PP" in w_sit
-
+        dur   = w_end - w_start if w_end < 99999 else 9999
+        is_pp = "PP" in w_sit
         if is_pp:
-            # Check A: drop near-zero artifacts only
-            if duration < MIN_PP_DURATION:
-                # Strip PP label, keep EN if present, default to 5v5
+            if dur < MIN_PP_DURATION:
                 base = w_sit.replace(" PP", "").strip()
-                validated.append([w_start, w_end, base if base else "5v5"])
+                validated.append([w_start, w_end, base or "5v5"])
                 continue
-            # Check B: must have a causative penalty
             if not has_valid_penalty(w_start):
                 base = w_sit.replace(" PP", "").strip()
-                validated.append([w_start, w_end, base if base else "5v5"])
+                validated.append([w_start, w_end, base or "5v5"])
                 continue
-
         validated.append(list(w))
 
-    # Final merge — downgraded PP windows may now be adjacent 5v5 windows
-    final = []
+    # Merge after validation
+    final_nhl = []
     for w in validated:
-        if final and final[-1][2] == w[2]:
-            final[-1][1] = w[1]
+        if final_nhl and final_nhl[-1][2] == w[2]:
+            final_nhl[-1][1] = w[1]
         else:
-            final.append(w)
+            final_nhl.append(w)
+    final_nhl = [(w[0], w[1], w[2]) for w in final_nhl if w[1] > w[0]]
 
-    return [(w[0], w[1], w[2]) for w in final if w[1] > w[0]]
+    # ── Phase 5: ESPN fallback for PPs the NHL API missed entirely ─────────
+    if espn_plays and (away_abbr or home_abbr):
+        esp_pens  = parse_espn_penalties(espn_plays, away_abbr, home_abbr)
+        espn_wins = build_espn_pp_windows(esp_pens, espn_plays)
 
+        for (es, ee, esit) in espn_wins:
+            nhl_covers = any(
+                "PP" in nhl_sit and ns <= es + 30 and ne >= ee - 30
+                for (ns, ne, nhl_sit) in final_nhl
+            )
+            if nhl_covers:
+                continue
+            insert_pos = len(final_nhl)
+            for i, (ns, ne, _) in enumerate(final_nhl):
+                if ns >= es:
+                    insert_pos = i
+                    break
+            final_nhl.insert(insert_pos, (es, ee, esit))
 
-def find_nhl_situation(espn_play: dict, nhl_plays: list, windows: list) -> str:
-    """
-    Find on-ice situation for an ESPN play using situation windows.
-    Primary: window lookup [start, end).
-    Fallback: nearest window within FUZZY_SECONDS for gaps.
-    """
+        final_nhl.sort(key=lambda w: w[0])
+
+    return final_nhl
+
+def find_nhl_situation(espn_play, windows):
+    """Find on-ice situation for an ESPN play from situation windows."""
     if not windows:
         return ""
-
     elapsed = espn_play.get("elapsed", 0)
-
-    for (w_start, w_end, w_sit) in windows:
-        if w_start <= elapsed < w_end:
-            return w_sit
-
-    # Final window (closed end)
+    for (ws, we, wsit) in windows:
+        if ws <= elapsed < we:
+            return wsit
     if windows and elapsed >= windows[-1][0]:
         return windows[-1][2]
-
-    # Nearest window fallback for micro-gaps
-    best     = None
-    best_gap = FUZZY_SECONDS + 1
-    for (w_start, w_end, w_sit) in windows:
-        gap = min(abs(elapsed - w_start), abs(elapsed - w_end))
+    best, best_gap = None, FUZZY_SECONDS + 1
+    for (ws, we, wsit) in windows:
+        gap = min(abs(elapsed - ws), abs(elapsed - we))
         if gap < best_gap:
-            best_gap = gap
-            best     = w_sit
+            best_gap, best = gap, wsit
     return best or ""
 
 # =========================
 # ESPN SCOREBOARD
 # =========================
 @st.cache_data(ttl=30, show_spinner=False)
-def fetch_scoreboard(date_str: str) -> list:
-    date_compact = date_str.replace("-", "")
+def fetch_scoreboard(date_str):
     try:
-        resp = requests.get(
+        data = requests.get(
             ESPN_SCOREBOARD,
-            params={"dates": date_compact, "limit": 25},
+            params={"dates": date_str.replace("-", ""), "limit": 25},
             timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        ).json()
     except Exception as e:
         st.error(f"ESPN error: {e}")
         return []
@@ -551,11 +683,10 @@ def fetch_scoreboard(date_str: str) -> list:
     return sorted(games, key=lambda x: x["time_str"])
 
 # =========================
-# ESPN + NHL HYBRID PLAYS
+# HYBRID PLAY PARSER
 # =========================
-def get_parsed_plays(event_id: str, nhl_game_id: str) -> list:
+def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     st.session_state.last_refresh = datetime.now(ET)
-
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
         return st.session_state.cached_plays
 
@@ -567,8 +698,9 @@ def get_parsed_plays(event_id: str, nhl_game_id: str) -> list:
         st.error(f"ESPN error: {e}")
         return []
 
-    nhl_plays = fetch_nhl_plays(nhl_game_id) if nhl_game_id else []
-    windows   = build_situation_windows(nhl_plays)
+    nhl_data = fetch_nhl_plays(nhl_game_id) if nhl_game_id else {"plays": [], "penalties": [], "teams": {}}
+    windows  = build_situation_windows(nhl_data, espn_plays=raw_plays,
+                                        away_abbr=away_abbr, home_abbr=home_abbr)
 
     plays = []
     for p in raw_plays:
@@ -584,11 +716,7 @@ def get_parsed_plays(event_id: str, nhl_game_id: str) -> list:
         seq        = int(p.get("sequenceNumber", 0))
         elapsed    = espn_clock_to_seconds(clock_val, pnum)
 
-        situation = find_nhl_situation(
-            {"period_num": pnum, "elapsed": elapsed, "type_text": type_text},
-            nhl_plays,
-            windows,
-        )
+        situation = find_nhl_situation({"elapsed": elapsed}, windows)
 
         plays.append({
             "seq":          seq,
@@ -614,7 +742,7 @@ def get_parsed_plays(event_id: str, nhl_game_id: str) -> list:
     return plays
 
 # =========================
-# SHARED CSS
+# CSS
 # =========================
 st.markdown("""
 <style>
@@ -637,6 +765,8 @@ if st.session_state.view == "game":
     plays = get_parsed_plays(
         st.session_state.event_id,
         st.session_state.nhl_game_id or "",
+        st.session_state.away,
+        st.session_state.home,
     )
 
     nav_col1, nav_col2, nav_col3, _ = st.columns([1.3, 1, 1.8, 5.9])
@@ -682,8 +812,8 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL Game ID `{nhl_id}`" if nhl_id
-        else "📡 NHL Game ID Not Found — PP & EN unavailable"
+        f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
+        else "📡 ESPN only — NHL ID not found"
     )
     st.divider()
 
@@ -696,9 +826,9 @@ if st.session_state.view == "game":
         return 200
     all_periods = sorted(raw_periods, key=p_key)
 
-    all_dts            = [p["wall_dt"] for p in plays if p["wall_dt"]]
-    game_start_default = min(all_dts) if all_dts else None
-    game_end_default   = max(all_dts) if all_dts else None
+    all_dts  = [p["wall_dt"] for p in plays if p["wall_dt"]]
+    g_start  = min(all_dts) if all_dts else None
+    g_end    = max(all_dts) if all_dts else None
 
     USE_PERIOD_FILTER = st.checkbox("🏒 Filter by Period", value=False, key="cb_period")
     selected_periods  = st.multiselect("Select Periods", options=all_periods) if USE_PERIOD_FILTER else []
@@ -706,10 +836,10 @@ if st.session_state.view == "game":
     USE_TIME_FILTER = st.checkbox("🕐 Filter by Actual Time (ET)", value=False, key="cb_time")
     START_DT = END_DT = None
     if USE_TIME_FILTER:
-        def_sd = game_start_default.date() if game_start_default else ddate.today()
-        def_ed = game_end_default.date()   if game_end_default   else ddate.today()
-        def_st = game_start_default.time() if game_start_default else dtime(19, 0)
-        def_et = game_end_default.time()   if game_end_default   else dtime(23, 59)
+        def_sd = g_start.date() if g_start else ddate.today()
+        def_ed = g_end.date()   if g_end   else ddate.today()
+        def_st = g_start.time() if g_start else dtime(19, 0)
+        def_et = g_end.time()   if g_end   else dtime(23, 59)
         st.markdown("**Start date/time (ET)**")
         sc1, sc2 = st.columns(2)
         with sc1: start_date_input = st.date_input("Start date", value=def_sd, key="tf_start_date")
@@ -717,7 +847,7 @@ if st.session_state.view == "game":
         st.markdown("**End date/time (ET)**")
         ec1, ec2 = st.columns(2)
         with ec1: end_date_input = st.date_input("End date", value=def_ed, key="tf_end_date")
-        with ec2: end_time_input = st.time_input("End time", value=def_et, step=60, key="tf_end_time")
+        with ec2: end_time_input = st.time_input("End time", value=def_et, step=60, key="tf_et")
         START_DT = datetime.combine(start_date_input, start_time_input).replace(tzinfo=ET)
         END_DT   = datetime.combine(end_date_input,   end_time_input).replace(tzinfo=ET)
 
@@ -755,7 +885,6 @@ if st.session_state.view == "game":
             st.session_state.cb_en     = False
         st.button("🗑️ Remove Filters", use_container_width=True, on_click=reset_filters)
 
-    # ── Display ───────────────────────────────────────────────────────────
     filters_applied = st.session_state.get("filters_applied")
     display_list    = st.session_state.filtered_plays if filters_applied else plays
     total   = len(plays)
