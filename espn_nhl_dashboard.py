@@ -903,6 +903,18 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
 
     plays.sort(key=lambda x: x["seq"])
 
+    # ── DIAGNOSTIC: show unique event types in this game ──────────────────
+    from collections import Counter
+    type_counts = Counter(p["type_text"] for p in plays)
+    penalty_plays = [p for p in plays if "penalty" in p["type_text"].lower()]
+    st.session_state["_diag_type_counts"]   = dict(type_counts.most_common())
+    st.session_state["_diag_penalty_count"] = len(penalty_plays)
+    st.session_state["_diag_penalty_sample"]= [
+        {"clock": p["clock"], "period": p["period_label"],
+         "type_text": p["type_text"], "text": p["text"][:80]}
+        for p in penalty_plays[:5]
+    ]
+
     # ── Fix 3: tag penalty plays that caused a confirmed PP ────────────────
     # A penalty play is tagged is_pp_cause=True when:
     #   1. It is a Penalty type play
@@ -1018,6 +1030,21 @@ if st.session_state.view == "game":
         f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
+
+    with st.expander("🔍 Diagnostic — ESPN event types", expanded=False):
+        counts  = st.session_state.get("_diag_type_counts", {})
+        n_pen   = st.session_state.get("_diag_penalty_count", 0)
+        samples = st.session_state.get("_diag_penalty_sample", [])
+        st.markdown(f"**Penalty plays found:** {n_pen}")
+        st.markdown("**All event types from ESPN:**")
+        for t, c in counts.items():
+            st.write(f"  `{t}` — {c} plays")
+        if samples:
+            st.markdown("**Sample penalty plays:**")
+            for s in samples:
+                st.write(f"  {s['period']} {s['clock']} | `{s['type_text']}` | {s['text']}")
+        else:
+            st.warning("No penalty plays detected in ESPN data.")
     st.divider()
 
     # ── Filters ───────────────────────────────────────────────────────────
