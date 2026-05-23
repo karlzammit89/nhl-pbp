@@ -38,6 +38,37 @@ PLAY_EMOJI = {
 
 FUZZY_SECONDS = 2
 
+# ESPN NHL type.id classification
+# IDs confirmed from production data (MTL 6-3 BUF, May 14 2026).
+# ESPN uses two separate ID namespaces:
+#   Penalty infractions: low IDs  (confirmed: 13, 29, 49, 91)
+#   Play events:         high IDs (confirmed: 502–522, 1401–1402)
+#
+# IMPORTANT: Only explicitly confirmed IDs are used for penalty detection.
+# The < 200 threshold is NOT used — it is an unverified assumption.
+# Run the diagnostic scanner across more games to expand this set safely.
+#
+# Confirmed penalty infraction IDs:
+ESPN_KNOWN_PENALTY_IDS = {13, 29, 49, 91}
+#   13=Cross checking  29=High-sticking  49=Slashing  91=Misconduct
+#
+# Confirmed non-penalty play event IDs:
+ESPN_NON_PENALTY_IDS = {502, 503, 505, 506, 507, 508, 516, 518, 519, 522, 1401, 1402}
+#   502=Face Off  503=Hit      505=Goal     506=Shot     507=Missed Shot
+#   508=Blocked   516=Stoppage 518=Period Start           519=Period End
+#   522=End of Game            1401=Takeaway              1402=Giveaway
+
+def is_espn_penalty(type_id) -> bool:
+    """
+    Returns True only if type_id is a confirmed ESPN penalty infraction ID.
+    Deliberately conservative — unknown IDs return False until confirmed
+    by running the diagnostic scanner across more games.
+    """
+    try:
+        return int(type_id) in ESPN_KNOWN_PENALTY_IDS
+    except (ValueError, TypeError):
+        return False
+
 # =========================
 # SESSION STATE INIT
 # =========================
@@ -874,6 +905,7 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         clock_val  = clock_obj.get("displayValue", "") if isinstance(clock_obj, dict) else str(clock_obj)
         type_obj   = p.get("type", {})
         type_text  = type_obj.get("text", "") if isinstance(type_obj, dict) else str(type_obj)
+        type_id    = type_obj.get("id",   "") if isinstance(type_obj, dict) else ""
         text       = p.get("text", "")
         wall_raw   = p.get("wallclock", "")
         seq        = int(p.get("sequenceNumber", 0))
@@ -889,6 +921,7 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "clock":        clock_val,
             "elapsed":      elapsed,
             "type_text":    type_text,
+            "type_id":      type_id,
             "text":         text,
             "situation":    situation,
             "wall_raw":     wall_raw,
@@ -897,50 +930,30 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "away_score":   p.get("awayScore", ""),
             "home_score":   p.get("homeScore", ""),
             "emoji":        get_play_emoji(type_text),
-            "is_pp_cause":  False,   # Fix 3: set below after sort
-            "pp_arrow":     "",      # Fix 3: pre-computed arrow e.g. '5v5 → 5v4 PP'
+            "is_pp_cause":  False,
+            "pp_arrow":     "",
         })
 
     plays.sort(key=lambda x: x["seq"])
 
-    # ── DIAGNOSTIC: show unique event types in this game ──────────────────
-    from collections import Counter
-    type_counts = Counter(p["type_text"] for p in plays)
-    penalty_plays = [p for p in plays if "penalty" in p["type_text"].lower()]
-    st.session_state["_diag_type_counts"]   = dict(type_counts.most_common())
-    st.session_state["_diag_penalty_count"] = len(penalty_plays)
-    st.session_state["_diag_penalty_sample"]= [
-        {"clock": p["clock"], "period": p["period_label"],
-         "type_text": p["type_text"], "text": p["text"][:80]}
-        for p in penalty_plays[:5]
-    ]
-
-    # ── Fix 3: tag penalty plays that caused a confirmed PP ────────────────
+    # ── Tag penalty plays that caused a confirmed PP ───────────────────────
+    # Uses type.id (Option B) for reliable detection regardless of text label.
     # A penalty play is tagged is_pp_cause=True when:
-    #   1. It is a Penalty type play
-    #   2. A PP window starts within 60s after the penalty elapsed time
-    #   3. The PP window direction matches the penalised team:
-    #      - home team penalty → '5v4 PP' window (away has advantage)
-    #      - away team penalty → '4v5 PP' window (home has advantage)
-    #      - unknown team      → any PP window in range
-    # This excludes misconducts (no PP window), coincidentals (4v4 window),
-    # and back-to-back penalties on the same team (second penalty's window
-    # start is before its elapsed time, failing the range check).
+    #   1. ESPN type.id identifies it as a penalty infraction (not a play event)
+    #   2. A PP window starts within 60s after the penalty's elapsed time
+    # Misconducts and coincidentals are excluded automatically —
+    # they produce no PP window within 60s so the timing check fails.
     pp_window_starts = [(ws, wsit) for (ws, we, wsit) in windows if "PP" in wsit]
 
-    # Determine pen_side for each ESPN penalty from team abbreviation
-    away_up = away_abbr.upper()
-    home_up = home_abbr.upper()
-
     for play in plays:
-        if "penalty" not in play["type_text"].lower():
+        if not is_espn_penalty(play["type_id"]):
             continue
         pel = play["elapsed"]
         for ws, wsit in pp_window_starts:
             if not (pel <= ws <= pel + 60):
                 continue
             play["is_pp_cause"] = True
-            play["pp_arrow"] = f"5v5 → {wsit}"
+            play["pp_arrow"]    = f"5v5 → {wsit}"
             break
 
     st.session_state.cached_plays    = plays
@@ -1031,36 +1044,23 @@ if st.session_state.view == "game":
         else "📡 ESPN only — NHL ID not found"
     )
 
-    with st.expander("🔍 Diagnostic — penalty timestamp sources", expanded=False):
-        st.markdown("**ESPN event types with type.id:**")
+    with st.expander("🔬 Diagnostic — ESPN type IDs (this game)", expanded=False):
         try:
-            resp = requests.get(ESPN_SUMMARY,
-                params={"event": st.session_state.event_id}, timeout=15)
-            raw = resp.json()
-            plays_raw = raw.get("plays", [])
-
-            # Collect unique type_text → type_id mapping
+            resp     = requests.get(ESPN_SUMMARY,
+                           params={"event": st.session_state.event_id}, timeout=15)
+            raw_plays = resp.json().get("plays", [])
             from collections import defaultdict
-            type_id_map = defaultdict(set)
-            for p in plays_raw:
+            id_map = defaultdict(set)
+            for p in raw_plays:
                 t = p.get("type", {})
-                txt = t.get("text", "unknown") if isinstance(t, dict) else str(t)
-                tid = t.get("id", "?")       if isinstance(t, dict) else "?"
-                type_id_map[txt].add(str(tid))
-
-            # Sort so penalty infractions (not in non-penalty set) are highlighted
-            NON_PENALTY = {
-                "Face Off", "Shot", "Stoppage", "Hit", "Blocked", "Missed",
-                "Giveaway", "Goal", "Takeaway", "Period Start", "Period End",
-                "End of Game",
-            }
-            for txt, ids in sorted(type_id_map.items(), key=lambda x: x[0]):
-                id_str   = ", ".join(sorted(ids))
-                is_pen   = txt not in NON_PENALTY
-                marker   = "🟡 PENALTY" if is_pen else "  "
-                st.write(f"  {marker}  `{txt}` → id=`{id_str}`")
+                id_map[t.get("text","?")].add(str(t.get("id","?")))
+            for txt, ids in sorted(id_map.items()):
+                tid  = next(iter(ids))
+                flag = "🟡" if is_espn_penalty(tid) else "  "
+                st.write(f"{flag} `{txt}` → id=`{', '.join(sorted(ids))}`")
         except Exception as e:
-            st.error(f"ESPN fetch error: {e}")
+            st.error(f"Diagnostic error: {e}")
+
     st.divider()
 
     # ── Filters ───────────────────────────────────────────────────────────
@@ -1293,3 +1293,81 @@ else:
                             "cached_event_id": None,
                         })
                         st.rerun()
+
+# ── Month-wide type ID scanner ─────────────────────────────────────────────
+# Scans all completed NHL games in a date range and compiles every
+# ESPN type.id seen across all games. Run this to safely expand
+# ESPN_KNOWN_PENALTY_IDS with confirmed data before updating the code.
+st.divider()
+with st.expander("🔬 Diagnostic — scan all games in date range", expanded=False):
+    st.caption("Fetches every completed game in range and compiles all ESPN type IDs seen.")
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        scan_start = st.date_input("Start date", value=ddate(2026, 4, 1), key="scan_start")
+    with sc2:
+        scan_end   = st.date_input("End date",   value=ddate.today(),     key="scan_end")
+
+    if st.button("▶ Run scan", key="run_scan"):
+        from collections import defaultdict
+        import time as _time
+
+        all_type_ids  = defaultdict(set)   # type_text → set of type_ids seen
+        games_scanned = 0
+        games_failed  = 0
+
+        # Generate all dates in range
+        dates = []
+        cur = scan_start
+        while cur <= scan_end:
+            dates.append(cur)
+            cur += timedelta(days=1)
+
+        progress = st.progress(0, text="Starting scan…")
+        status   = st.empty()
+
+        for di, d in enumerate(dates):
+            date_str = d.strftime("%Y-%m-%d")
+            try:
+                resp = requests.get(
+                    ESPN_SCOREBOARD,
+                    params={"dates": date_str.replace("-",""), "limit": 25},
+                    timeout=10,
+                )
+                events = resp.json().get("events", [])
+            except Exception:
+                events = []
+
+            for event in events:
+                comp  = event.get("competitions", [{}])[0]
+                state = comp.get("status", {}).get("type", {}).get("state", "")
+                if state != "post":
+                    continue   # only scan completed games
+
+                eid = event.get("id", "")
+                try:
+                    r2 = requests.get(ESPN_SUMMARY,
+                             params={"event": eid}, timeout=15)
+                    plays = r2.json().get("plays", [])
+                    for p in plays:
+                        t = p.get("type", {})
+                        txt = t.get("text", "unknown")
+                        tid = str(t.get("id", "?"))
+                        all_type_ids[txt].add(tid)
+                    games_scanned += 1
+                except Exception:
+                    games_failed += 1
+                _time.sleep(0.1)   # be polite to ESPN API
+
+            pct  = (di + 1) / len(dates)
+            progress.progress(pct, text=f"{date_str} — {games_scanned} games scanned")
+
+        progress.progress(1.0, text="Scan complete")
+        status.success(f"Scanned {games_scanned} games, {games_failed} failed.")
+
+        st.markdown("**All ESPN type IDs across scanned games:**")
+        st.markdown("IDs highlighted 🟡 are already in `ESPN_KNOWN_PENALTY_IDS`")
+        for txt, ids in sorted(all_type_ids.items()):
+            id_str = ", ".join(sorted(ids))
+            flag   = "🟡" if any(is_espn_penalty(i) for i in ids) else "  "
+            known  = "✅ confirmed" if any(is_espn_penalty(i) for i in ids) else ""
+            st.write(f"{flag} `{txt}` → id=`{id_str}` {known}")
