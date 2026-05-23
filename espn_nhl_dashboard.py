@@ -1020,7 +1020,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
+        f"📡 NHL `{nhl_id}`" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
     st.divider()
