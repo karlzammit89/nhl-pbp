@@ -1031,20 +1031,66 @@ if st.session_state.view == "game":
         else "📡 ESPN only — NHL ID not found"
     )
 
-    with st.expander("🔍 Diagnostic — ESPN event types", expanded=False):
+    with st.expander("🔍 Diagnostic — penalty timestamp sources", expanded=False):
         counts  = st.session_state.get("_diag_type_counts", {})
         n_pen   = st.session_state.get("_diag_penalty_count", 0)
         samples = st.session_state.get("_diag_penalty_sample", [])
-        st.markdown(f"**Penalty plays found:** {n_pen}")
-        st.markdown("**All event types from ESPN:**")
+
+        st.markdown(f"**ESPN penalty plays found:** {n_pen}")
+        st.markdown("**All ESPN event types:**")
         for t, c in counts.items():
             st.write(f"  `{t}` — {c} plays")
-        if samples:
-            st.markdown("**Sample penalty plays:**")
-            for s in samples:
-                st.write(f"  {s['period']} {s['clock']} | `{s['type_text']}` | {s['text']}")
-        else:
-            st.warning("No penalty plays detected in ESPN data.")
+
+        st.divider()
+
+        # Check ESPN summary for non-plays sections that may have penalty data
+        try:
+            resp = requests.get(ESPN_SUMMARY,
+                params={"event": st.session_state.event_id}, timeout=15)
+            raw = resp.json()
+            espn_keys = list(raw.keys())
+            st.markdown(f"**ESPN summary top-level keys:** `{espn_keys}`")
+
+            # Check each key for penalty-related content
+            for key in espn_keys:
+                val = raw.get(key)
+                if isinstance(val, list) and val:
+                    sample = str(val[0])[:120]
+                    has_pen = "penalt" in str(val).lower()
+                    if has_pen:
+                        st.warning(f"🟡 `{key}` — {len(val)} items — contains 'penalty' text")
+                        st.write(f"  Sample: `{sample}`")
+                elif isinstance(val, dict):
+                    has_pen = "penalt" in str(val).lower()
+                    if has_pen:
+                        st.warning(f"🟡 `{key}` (dict) — contains 'penalty' text")
+                        st.write(f"  Keys: `{list(val.keys())}`")
+        except Exception as e:
+            st.error(f"ESPN summary fetch error: {e}")
+
+        st.divider()
+
+        # Check NHL API plays for timestamp fields we may not be parsing
+        nhl_id = st.session_state.get("nhl_game_id")
+        if nhl_id:
+            try:
+                resp2 = requests.get(f"{NHL_PBP}/{nhl_id}/play-by-play", timeout=10)
+                data2 = resp2.json()
+                # Find first penalty play
+                pen_play = next(
+                    (p for p in data2.get("plays", [])
+                     if p.get("typeDescKey") in ("penalty", "delayed-penalty")),
+                    None
+                )
+                if pen_play:
+                    st.markdown("**First NHL penalty play — all fields:**")
+                    # Show every field on the play to find any timestamp
+                    for k, v in pen_play.items():
+                        st.write(f"  `{k}`: `{v}`")
+                else:
+                    st.info("No penalty plays found in NHL data")
+            except Exception as e:
+                st.error(f"NHL API fetch error: {e}")
     st.divider()
 
     # ── Filters ───────────────────────────────────────────────────────────
