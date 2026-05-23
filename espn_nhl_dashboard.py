@@ -921,14 +921,13 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     home_up = home_abbr.upper()
 
     for play in plays:
-        if play["type_text"] != "Penalty":
+        if "penalty" not in play["type_text"].lower():
             continue
         pel = play["elapsed"]
         for ws, wsit in pp_window_starts:
             if not (pel <= ws <= pel + 60):
                 continue
             play["is_pp_cause"] = True
-            # Pre-compute the arrow label so the render loop doesn't need windows
             play["pp_arrow"] = f"5v5 → {wsit}"
             break
 
@@ -1016,7 +1015,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL `{nhl_id}`" if nhl_id
+        f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
     st.divider()
