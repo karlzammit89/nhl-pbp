@@ -975,24 +975,31 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     plays.sort(key=lambda x: x["seq"])
 
     # ── Tag penalty plays that caused a confirmed PP ───────────────────────
-    # Uses type.id (Option B) for reliable detection regardless of text label.
-    # A penalty play is tagged is_pp_cause=True when:
-    #   1. ESPN type.id identifies it as a penalty infraction (not a play event)
-    #   2. A PP window starts within 60s after the penalty's elapsed time
-    # Misconducts and coincidentals are excluded automatically —
-    # they produce no PP window within 60s so the timing check fails.
-    pp_window_starts = [(ws, wsit) for (ws, we, wsit) in windows if "PP" in wsit]
+    # Uses type.id for reliable detection regardless of ESPN text label.
+    # A penalty play is tagged is_pp_cause=True when EITHER:
+    #   Condition A — penalty is INSIDE an active PP window
+    #                 ws <= penalty_elapsed < we
+    #                 Catches: penalties added during existing PP (5v3 stacking),
+    #                 Thompson-style where PP was already active
+    #   Condition B — a PP window starts within 120s after the penalty
+    #                 penalty_elapsed <= ws <= penalty_elapsed + 120
+    #                 Catches: standard faceoff delays (20-60s) AND
+    #                 post-goal stoppages (60-100s) like Byram
+    # Only PP windows (containing 'PP') are matched — 4v4 coincidental
+    # windows are skipped automatically, preventing false positives.
+    pp_windows = [(ws, we, wsit) for (ws, we, wsit) in windows if "PP" in wsit]
 
     for play in plays:
         if not is_espn_penalty(play["type_id"]):
             continue
         pel = play["elapsed"]
-        for ws, wsit in pp_window_starts:
-            if not (pel <= ws <= pel + 60):
-                continue
-            play["is_pp_cause"] = True
-            play["pp_arrow"]    = f"5v5 → {wsit}"
-            break
+        for ws, we, wsit in pp_windows:
+            inside = ws <= pel < we               # Condition A
+            ahead  = pel <= ws <= pel + 120        # Condition B
+            if inside or ahead:
+                play["is_pp_cause"] = True
+                play["pp_arrow"]    = f"5v5 → {wsit}"
+                break
 
     st.session_state.cached_plays    = plays
     st.session_state.cached_event_id = event_id
