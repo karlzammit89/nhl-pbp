@@ -38,25 +38,63 @@ PLAY_EMOJI = {
 
 FUZZY_SECONDS = 2
 
-# ESPN NHL type.id classification
-# IDs confirmed from production data (MTL 6-3 BUF, May 14 2026).
-# ESPN uses two separate ID namespaces:
-#   Penalty infractions: low IDs  (confirmed: 13, 29, 49, 91)
-#   Play events:         high IDs (confirmed: 502–522, 1401–1402)
+# ESPN NHL type.id — confirmed penalty infraction IDs
+# Sourced from four production scans: Oct-Dec 2025, Jan-Feb 2026, Apr-May 2026
+# plus confirmed decisions on Abusive Language (101) and Abuse of Official minor (64).
+# Only explicitly confirmed IDs are used — no threshold assumptions.
+# Add new IDs here as they are confirmed via the game diagnostic expander.
 #
-# IMPORTANT: Only explicitly confirmed IDs are used for penalty detection.
-# The < 200 threshold is NOT used — it is an unverified assumption.
-# Run the diagnostic scanner across more games to expand this set safely.
+# Confirmed NO-PP (never add): 25=Leaving Crease, 38/106=Instigator,
+#   80=Fighting, 91=Misconduct, 93/94=Game/Abuse Misconduct,
+#   105=Aggressor, 143=Penalty Shot, 509=Penalty (ambiguous)
 #
-# Confirmed penalty infraction IDs:
-ESPN_KNOWN_PENALTY_IDS = {13, 29, 49, 91}
-#   13=Cross checking  29=High-sticking  49=Slashing  91=Misconduct
-#
-# Confirmed non-penalty play event IDs:
-ESPN_NON_PENALTY_IDS = {502, 503, 505, 506, 507, 508, 516, 518, 519, 522, 1401, 1402}
-#   502=Face Off  503=Hit      505=Goal     506=Shot     507=Missed Shot
-#   508=Blocked   516=Stoppage 518=Period Start           519=Period End
-#   522=End of Game            1401=Takeaway              1402=Giveaway
+# Still unknown (extremely rare): Spearing, Clipping, Head Butting, Biting, Spitting
+ESPN_KNOWN_PENALTY_IDS = {
+      7,   # Boarding (minor variant)
+      9,   # Broken Stick
+     10,   # Butt Ending
+     11,   # Charging
+     12,   # Closing Hand on Puck
+     13,   # Cross checking
+     17,   # Elbowing
+     20,   # Illegal Check to the Head
+     22,   # Delay of Game
+     29,   # High-sticking
+     30,   # High sticking (label variant of 29)
+     31,   # Holding
+     32,   # Holding the Stick
+     33,   # Hooking
+     35,   # Illegal Stick
+     37,   # Interference
+     39,   # Kneeing
+     40,   # Goalkeeper Interference
+     45,   # Roughing
+     49,   # Slashing
+     52,   # Throwing the Stick
+     55,   # Tripping
+     57,   # Unsportsmanlike Conduct
+     58,   # Too Many Men on the Ice
+     64,   # Abuse of Official (minor level)
+     72,   # Boarding (major variant)
+     76,   # Crosschecking (label variant of 13)
+     85,   # Kneeing (variant ID)
+     86,   # Slashing (variant ID)
+    101,   # Abusive Language
+    107,   # Delaying Game - Illegal Play by Goaltender
+    108,   # Delaying Game - Smothering Puck
+    109,   # Delaying Game - Puck over Glass
+    123,   # Interference (variant ID)
+    132,   # Throwing Object at Puck
+    135,   # Hooking on Breakaway
+    136,   # Tripping on Breakaway
+    137,   # Slashing on Breakaway
+    140,   # Game Misconduct - Head Coach (bench minor)
+    142,   # Embellishment
+    149,   # Removing Opponent Helmet
+    150,   # Goalie Removed Own Mask
+    151,   # Delay Game - Unsuccessful Challenge
+    163,   # Playing without a Helmet
+}
 
 def is_espn_penalty(type_id) -> bool:
     """
@@ -1043,24 +1081,6 @@ if st.session_state.view == "game":
         f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
-
-    with st.expander("🔬 Diagnostic — ESPN type IDs (this game)", expanded=False):
-        try:
-            resp     = requests.get(ESPN_SUMMARY,
-                           params={"event": st.session_state.event_id}, timeout=15)
-            raw_plays = resp.json().get("plays", [])
-            from collections import defaultdict
-            id_map = defaultdict(set)
-            for p in raw_plays:
-                t = p.get("type", {})
-                id_map[t.get("text","?")].add(str(t.get("id","?")))
-            for txt, ids in sorted(id_map.items()):
-                tid  = next(iter(ids))
-                flag = "🟡" if is_espn_penalty(tid) else "  "
-                st.write(f"{flag} `{txt}` → id=`{', '.join(sorted(ids))}`")
-        except Exception as e:
-            st.error(f"Diagnostic error: {e}")
-
     st.divider()
 
     # ── Filters ───────────────────────────────────────────────────────────
@@ -1293,81 +1313,3 @@ else:
                             "cached_event_id": None,
                         })
                         st.rerun()
-
-# ── Month-wide type ID scanner ─────────────────────────────────────────────
-# Scans all completed NHL games in a date range and compiles every
-# ESPN type.id seen across all games. Run this to safely expand
-# ESPN_KNOWN_PENALTY_IDS with confirmed data before updating the code.
-st.divider()
-with st.expander("🔬 Diagnostic — scan all games in date range", expanded=False):
-    st.caption("Fetches every completed game in range and compiles all ESPN type IDs seen.")
-    sc1, sc2 = st.columns(2)
-    with sc1:
-        scan_start = st.date_input("Start date", value=ddate(2026, 4, 1), key="scan_start")
-    with sc2:
-        scan_end   = st.date_input("End date",   value=ddate.today(),     key="scan_end")
-
-    if st.button("▶ Run scan", key="run_scan"):
-        from collections import defaultdict
-        import time as _time
-
-        all_type_ids  = defaultdict(set)   # type_text → set of type_ids seen
-        games_scanned = 0
-        games_failed  = 0
-
-        # Generate all dates in range
-        dates = []
-        cur = scan_start
-        while cur <= scan_end:
-            dates.append(cur)
-            cur += timedelta(days=1)
-
-        progress = st.progress(0, text="Starting scan…")
-        status   = st.empty()
-
-        for di, d in enumerate(dates):
-            date_str = d.strftime("%Y-%m-%d")
-            try:
-                resp = requests.get(
-                    ESPN_SCOREBOARD,
-                    params={"dates": date_str.replace("-",""), "limit": 25},
-                    timeout=10,
-                )
-                events = resp.json().get("events", [])
-            except Exception:
-                events = []
-
-            for event in events:
-                comp  = event.get("competitions", [{}])[0]
-                state = comp.get("status", {}).get("type", {}).get("state", "")
-                if state != "post":
-                    continue   # only scan completed games
-
-                eid = event.get("id", "")
-                try:
-                    r2 = requests.get(ESPN_SUMMARY,
-                             params={"event": eid}, timeout=15)
-                    plays = r2.json().get("plays", [])
-                    for p in plays:
-                        t = p.get("type", {})
-                        txt = t.get("text", "unknown")
-                        tid = str(t.get("id", "?"))
-                        all_type_ids[txt].add(tid)
-                    games_scanned += 1
-                except Exception:
-                    games_failed += 1
-                _time.sleep(0.1)   # be polite to ESPN API
-
-            pct  = (di + 1) / len(dates)
-            progress.progress(pct, text=f"{date_str} — {games_scanned} games scanned")
-
-        progress.progress(1.0, text="Scan complete")
-        status.success(f"Scanned {games_scanned} games, {games_failed} failed.")
-
-        st.markdown("**All ESPN type IDs across scanned games:**")
-        st.markdown("IDs highlighted 🟡 are already in `ESPN_KNOWN_PENALTY_IDS`")
-        for txt, ids in sorted(all_type_ids.items()):
-            id_str = ", ".join(sorted(ids))
-            flag   = "🟡" if any(is_espn_penalty(i) for i in ids) else "  "
-            known  = "✅ confirmed" if any(is_espn_penalty(i) for i in ids) else ""
-            st.write(f"{flag} `{txt}` → id=`{id_str}` {known}")
