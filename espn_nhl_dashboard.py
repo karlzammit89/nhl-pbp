@@ -984,8 +984,8 @@ if st.session_state.view == "game":
             st.session_state.cached_event_id = None
             st.rerun()
     with nav_col3:
-        sort_label = "↑ Newest first" if not st.session_state.sort_newest_first else "↓ Oldest first"
-        sort_type  = "primary" if st.session_state.sort_newest_first else "secondary"
+        sort_label = "↓ Oldest first" if not st.session_state.sort_newest_first else "↑ Newest first"
+        sort_type  = "secondary" if not st.session_state.sort_newest_first else "primary"
         if st.button(sort_label, use_container_width=True, type=sort_type):
             st.session_state.sort_newest_first = not st.session_state.sort_newest_first
             st.rerun()
@@ -1020,7 +1020,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL `{nhl_id}`" if nhl_id
+        f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
     st.divider()
