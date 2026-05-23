@@ -975,31 +975,42 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     plays.sort(key=lambda x: x["seq"])
 
     # ── Tag penalty plays that caused a confirmed PP ───────────────────────
-    # Uses type.id for reliable detection regardless of ESPN text label.
-    # A penalty play is tagged is_pp_cause=True when EITHER:
-    #   Condition A — penalty is INSIDE an active PP window
-    #                 ws <= penalty_elapsed < we
-    #                 Catches: penalties added during existing PP (5v3 stacking),
-    #                 Thompson-style where PP was already active
-    #   Condition B — a PP window starts within 120s after the penalty
-    #                 penalty_elapsed <= ws <= penalty_elapsed + 120
-    #                 Catches: standard faceoff delays (20-60s) AND
-    #                 post-goal stoppages (60-100s) like Byram
-    # Only PP windows (containing 'PP') are matched — 4v4 coincidental
-    # windows are skipped automatically, preventing false positives.
     pp_windows = [(ws, we, wsit) for (ws, we, wsit) in windows if "PP" in wsit]
+
+    # Capture diagnostic data for every ESPN penalty play found
+    _diag = {
+        "pp_windows":    [(ws, we, wsit) for ws, we, wsit in pp_windows],
+        "penalty_plays": [],
+    }
 
     for play in plays:
         if not is_espn_penalty(play["type_id"]):
             continue
         pel = play["elapsed"]
+        matched_ws = matched_wsit = None
+        match_reason = "no match"
         for ws, we, wsit in pp_windows:
-            inside = ws <= pel < we               # Condition A
-            ahead  = pel <= ws <= pel + 120        # Condition B
+            inside = ws <= pel < we
+            ahead  = pel <= ws <= pel + 120
             if inside or ahead:
+                matched_ws   = ws
+                matched_wsit = wsit
+                match_reason = f"inside [{ws}-{we}]" if inside else f"ahead {ws-pel}s"
                 play["is_pp_cause"] = True
                 play["pp_arrow"]    = f"5v5 → {wsit}"
                 break
+        _diag["penalty_plays"].append({
+            "clock":        play["clock"],
+            "period":       play["period_label"],
+            "type_text":    play["type_text"],
+            "type_id":      play["type_id"],
+            "elapsed":      pel,
+            "is_penalty":   True,
+            "tagged":       play["is_pp_cause"],
+            "match_reason": match_reason,
+        })
+
+    st.session_state["_pen_diag"] = _diag
 
     st.session_state.cached_plays    = plays
     st.session_state.cached_event_id = event_id
@@ -1088,6 +1099,22 @@ if st.session_state.view == "game":
         f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
+
+    # ── Penalty tagging diagnostic ─────────────────────────────────────────
+    diag = st.session_state.get("_pen_diag", {})
+    if diag:
+        with st.expander("🔬 Penalty tagging diagnostic", expanded=True):
+            pp_wins = diag.get("pp_windows", [])
+            st.markdown(f"**PP windows ({len(pp_wins)}):**")
+            for ws, we, wsit in pp_wins[:20]:
+                st.write(f"  [{ws}s – {we}s] `{wsit}`")
+            pens = diag.get("penalty_plays", [])
+            st.markdown(f"**ESPN penalty plays found: {len(pens)}**")
+            for p in pens:
+                icon = "✅" if p["tagged"] else "❌"
+                st.write(f"  {icon} {p['period']} {p['clock']} | id=`{p['type_id']}` "
+                         f"`{p['type_text']}` elapsed={p['elapsed']}s → {p['match_reason']}")
+
     st.divider()
 
     # ── Filters ───────────────────────────────────────────────────────────
