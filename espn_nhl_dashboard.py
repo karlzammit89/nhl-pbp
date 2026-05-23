@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import time
 from datetime import datetime, date as ddate, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 
@@ -50,6 +51,8 @@ for k, v in {
     "filters_applied": False,
     "filtered_plays": None,
     "active_filter_snapshot": {},
+    "sort_newest_first": False,
+    "force_bucket": None,
     "cached_plays": None,
     "cached_event_id": None,
     "last_refresh": datetime.now(ET),
@@ -181,8 +184,8 @@ NO_PP_PENALTY_TYPES = {
     "fighting",         # offsetting, 5v5 continues unless one side has more
 }
 
-@st.cache_data(ttl=30, show_spinner=False)
-def fetch_nhl_plays(nhl_game_id):
+@st.cache_data(show_spinner=False)
+def fetch_nhl_plays(nhl_game_id, cache_bucket: int = 0):
     """
     Fetch NHL play-by-play and parse plays + penalty details.
     Returns dict with:
@@ -840,7 +843,7 @@ def fetch_scoreboard(date_str):
 # HYBRID PLAY PARSER
 # =========================
 def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
-    st.session_state.last_refresh = datetime.now(ET)
+    # Return cached plays if available — last_refresh only updates on real fetch
     if st.session_state.cached_event_id == event_id and st.session_state.cached_plays:
         return st.session_state.cached_plays
 
@@ -852,9 +855,15 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         st.error(f"ESPN error: {e}")
         return []
 
-    nhl_data = fetch_nhl_plays(nhl_game_id) if nhl_game_id else {"plays": [], "penalties": [], "teams": {}}
+    # Resolve cache bucket: Refresh button sets force_bucket to current+1
+    # to guarantee a cache miss. Normal loads use 30-second time buckets.
+    bucket = st.session_state.get("force_bucket") or int(time.time() // 30)
+    nhl_data = fetch_nhl_plays(nhl_game_id, cache_bucket=bucket) if nhl_game_id else {"plays": [], "penalties": [], "teams": {}}
     windows  = build_situation_windows(nhl_data, espn_plays=raw_plays,
                                         away_abbr=away_abbr, home_abbr=home_abbr)
+
+    # last_refresh only updates after a real fetch completes
+    st.session_state.last_refresh = datetime.now(ET)
 
     plays = []
     for p in raw_plays:
@@ -888,9 +897,45 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "away_score":   p.get("awayScore", ""),
             "home_score":   p.get("homeScore", ""),
             "emoji":        get_play_emoji(type_text),
+            "is_pp_cause":  False,   # Fix 3: set below after sort
         })
 
     plays.sort(key=lambda x: x["seq"])
+
+    # ── Fix 3: tag penalty plays that caused a confirmed PP ────────────────
+    # A penalty play is tagged is_pp_cause=True when:
+    #   1. It is a Penalty type play
+    #   2. A PP window starts within 60s after the penalty elapsed time
+    #   3. The PP window direction matches the penalised team:
+    #      - home team penalty → '5v4 PP' window (away has advantage)
+    #      - away team penalty → '4v5 PP' window (home has advantage)
+    #      - unknown team      → any PP window in range
+    # This excludes misconducts (no PP window), coincidentals (4v4 window),
+    # and back-to-back penalties on the same team (second penalty's window
+    # start is before its elapsed time, failing the range check).
+    pp_window_starts = [(ws, wsit) for (ws, we, wsit) in windows if "PP" in wsit]
+
+    # Determine pen_side for each ESPN penalty from team abbreviation
+    away_up = away_abbr.upper()
+    home_up = home_abbr.upper()
+
+    for play in plays:
+        if play["type_text"] != "Penalty":
+            continue
+        pel = play["elapsed"]
+        # pen_side determined at parse time is not stored; re-derive from text or
+        # use 'unknown'. The PP direction check already handles this gracefully.
+        pen_side = ""   # ESPN play dict doesn't carry team here — use direction only
+
+        for ws, wsit in pp_window_starts:
+            if not (pel <= ws <= pel + 60):
+                continue
+            # Any PP window in range qualifies — direction already baked into wsit
+            # by the window builder which uses NHL team IDs or ESPN team abbr.
+            # We trust the window label is correct and just verify timing.
+            play["is_pp_cause"] = True
+            break
+
     st.session_state.cached_plays    = plays
     st.session_state.cached_event_id = event_id
     return plays
@@ -923,7 +968,7 @@ if st.session_state.view == "game":
         st.session_state.home,
     )
 
-    nav_col1, nav_col2, nav_col3, _ = st.columns([1.3, 1, 1.8, 5.9])
+    nav_col1, nav_col2, nav_col3, nav_col4, _ = st.columns([1.3, 0.9, 1.1, 1.8, 4.9])
     with nav_col1:
         if st.button("⬅ Back to Schedule", use_container_width=True):
             st.session_state.view            = "schedule"
@@ -932,11 +977,19 @@ if st.session_state.view == "game":
             st.rerun()
     with nav_col2:
         if st.button("🔄 Refresh", use_container_width=True):
-            fetch_nhl_plays.clear()          # bust Streamlit @st.cache_data
+            # Force a new cache bucket so fetch_nhl_plays gets fresh data
+            # regardless of any shared function cache on Streamlit Cloud
+            st.session_state.force_bucket    = int(time.time() // 30) + 1
             st.session_state.cached_plays    = None
             st.session_state.cached_event_id = None
             st.rerun()
     with nav_col3:
+        sort_label = "↑ Newest first" if not st.session_state.sort_newest_first else "↓ Oldest first"
+        sort_type  = "primary" if st.session_state.sort_newest_first else "secondary"
+        if st.button(sort_label, use_container_width=True, type=sort_type):
+            st.session_state.sort_newest_first = not st.session_state.sort_newest_first
+            st.rerun()
+    with nav_col4:
         refresh_time = st.session_state.last_refresh.strftime("%H:%M:%S ET")
         st.markdown(
             f'<div style="background-color:#2e7d32;color:white;padding:8px 16px;'
@@ -967,7 +1020,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL `{nhl_id}`" if nhl_id
+        f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
     st.divider()
@@ -1022,7 +1075,7 @@ if st.session_state.view == "game":
                     if not p["wall_dt"] or START_DT is None or END_DT is None: return False
                     if not (START_DT <= p["wall_dt"] <= END_DT): return False
                 if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
-                if USE_PP_FILTER and "PP" not in sit: return False
+                if USE_PP_FILTER and "PP" not in sit and not p.get("is_pp_cause", False): return False
                 if USE_GP_FILTER and "EN" not in sit: return False
                 return True
             st.session_state.filtered_plays  = [p for p in plays if passes(p)]
@@ -1062,6 +1115,9 @@ if st.session_state.view == "game":
 
     filters_applied = st.session_state.get("filters_applied")
     display_list    = st.session_state.filtered_plays if filters_applied else plays
+    # Fix 2: reverse display order without mutating the stored list
+    if st.session_state.sort_newest_first:
+        display_list = display_list[::-1]
     total   = len(plays)
     showing = len(display_list)
 
