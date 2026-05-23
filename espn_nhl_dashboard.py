@@ -898,6 +898,7 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "home_score":   p.get("homeScore", ""),
             "emoji":        get_play_emoji(type_text),
             "is_pp_cause":  False,   # Fix 3: set below after sort
+            "pp_arrow":     "",      # Fix 3: pre-computed arrow e.g. '5v5 → 5v4 PP'
         })
 
     plays.sort(key=lambda x: x["seq"])
@@ -923,17 +924,12 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         if play["type_text"] != "Penalty":
             continue
         pel = play["elapsed"]
-        # pen_side determined at parse time is not stored; re-derive from text or
-        # use 'unknown'. The PP direction check already handles this gracefully.
-        pen_side = ""   # ESPN play dict doesn't carry team here — use direction only
-
         for ws, wsit in pp_window_starts:
             if not (pel <= ws <= pel + 60):
                 continue
-            # Any PP window in range qualifies — direction already baked into wsit
-            # by the window builder which uses NHL team IDs or ESPN team abbr.
-            # We trust the window label is correct and just verify timing.
             play["is_pp_cause"] = True
+            # Pre-compute the arrow label so the render loop doesn't need windows
+            play["pp_arrow"] = f"5v5 → {wsit}"
             break
 
     st.session_state.cached_plays    = plays
@@ -1020,7 +1016,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
+        f"📡 NHL `{nhl_id}`" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
     st.divider()
@@ -1141,20 +1137,46 @@ if st.session_state.view == "game":
         if snap.get("en"):
             st.info(f"🥅 **Empty Nets Only:** showing **{showing}** of **{total}** plays")
 
-    # Render plays as single HTML block per play (fix #1) —
-    # replaces ~5 individual st.markdown calls per play with one,
-    # cutting Streamlit element count by ~80% for faster rerenders
     for p in display_list:
-        emoji = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
-        st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
-        st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
-        st.markdown(f"🎯 **Event:** {p.get('type_text')}")
-        sit = p.get("situation", "")
-        if sit:
-            st.markdown(f"⚖️ **Strength:** `{sit}`")
-        st.markdown(f"📋 **Play:** {p.get('text')}")
-        if p.get("wall_et") and p.get("wall_et") != "N/A":
-            st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+        emoji        = "🚨" if p.get("type_text") == "Goal" else p.get("emoji", "🏒")
+        sit          = p.get("situation", "")
+        is_pp_cause  = p.get("is_pp_cause", False)
+
+        if is_pp_cause:
+            # Amber left border signals this play triggered the PP
+            strength_display = p.get("pp_arrow") or sit
+            st.markdown(
+                '<div style="border-left:3px solid #BA7517;padding-left:12px;margin-bottom:0">',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">'
+                f'<span style="font-size:1.4rem;font-weight:500">'
+                f'{emoji} {p.get("period_label")} | ⏱️ {p.get("clock")}</span>'
+                f'<span style="background:#FAEEDA;color:#854F0B;font-size:12px;'
+                f'font-weight:500;padding:2px 8px;border-radius:4px;white-space:nowrap">'
+                f'PP Cause</span></div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+            st.markdown(f"🎯 **Event:** {p.get('type_text')}")
+            if strength_display:
+                st.markdown(f"⚖️ **Strength:** `{strength_display}`")
+            st.markdown(f"📋 **Play:** {p.get('text')}")
+            if p.get("wall_et") and p.get("wall_et") != "N/A":
+                st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+            st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            # Standard render — identical to original
+            st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
+            st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+            st.markdown(f"🎯 **Event:** {p.get('type_text')}")
+            if sit:
+                st.markdown(f"⚖️ **Strength:** `{sit}`")
+            st.markdown(f"📋 **Play:** {p.get('text')}")
+            if p.get("wall_et") and p.get("wall_et") != "N/A":
+                st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+
         st.divider()
 
 # ======================================================
