@@ -381,30 +381,24 @@ ESPN_NO_PP_KEYWORDS = [
 
 def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
     """
-    Fallback penalty parser using ESPN play text.
-    Detects penalty events from ESPN play-by-play text format.
+    Fallback penalty parser using ESPN play type.id for detection.
+    Uses is_espn_penalty(type_id) — the same confirmed ID set used for
+    is_pp_cause tagging — so any play detected as a penalty here is
+    consistent with what gets tagged in the feed.
 
-    Sample ESPN penalty text formats observed:
-      "Tage Thompson Cross Checking (2 min)"
-      "Bowen Byram High Sticking (Double Minor - 4 min) drawn by ..."
-      "Brayden McNabb Interference (Major - 5 min)"
-      "Coincidental minors - Byram and Suzuki"
+    Direction convention (matches NHL sit code XvY = away_sk v home_sk):
+      away team committed penalty → away short → 4v5 PP (4 away, 5 home)
+      home team committed penalty → home short → 5v4 PP (5 away, 4 home)
 
-    Detection strategy:
-      1. type.text contains "penalty"
-      2. Skip if text contains coincidental/offsetting keywords
-      3. Determine duration from multiple signals:
-         a) Keyword match (longest first: "double minor" before "minor")
-         b) Direct numeric: "(4 min)", "(2:00)", "(5 min)"
-         c) Default 120s (minor) if "penalty" but no duration found
+    Duration: extracted from play text where present, default 120s (minor).
     """
     import re
 
     penalties = []
     for p in espn_plays:
         type_obj  = p.get("type", {})
-        type_text = (type_obj.get("text", "") if isinstance(type_obj, dict) else "").lower()
-        if "penalty" not in type_text:
+        type_id   = type_obj.get("id", "") if isinstance(type_obj, dict) else ""
+        if not is_espn_penalty(type_id):
             continue
 
         text = (p.get("text") or "").lower()
@@ -435,11 +429,11 @@ def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
                     duration = 300
                     is_major = True
                 elif mins == 10:
-                    duration = None    # misconduct, no PP
+                    duration = 0      # misconduct — skip below
                 else:
-                    duration = 120     # default 2-min minor
+                    duration = 120    # default 2-min minor
 
-        # Final default — assume minor if nothing else
+        # Final default — assume minor if nothing else found
         if duration is None:
             duration = 120
 
@@ -452,17 +446,17 @@ def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
         clock_val  = clock_obj.get("displayValue", "0:00") if isinstance(clock_obj, dict) else "0:00"
         elapsed    = espn_clock_to_seconds(clock_val, pnum)
 
-        team_obj = p.get("team", {})
+        team_obj      = p.get("team", {})
         pen_team_abbr = team_obj.get("abbreviation", "").upper() if isinstance(team_obj, dict) else ""
 
-        # Fallback: if team field missing, try to identify from text
-        # ESPN text usually starts with the penalised player; we don't have a
-        # name → team map, so we leave pen_side blank if abbr missing.
+        # Direction: team field = team that COMMITTED the penalty
+        # away committed → away short (4) → home PP → 4v5 PP
+        # home committed → home short (4) → away PP → 5v4 PP
         if pen_team_abbr == away_abbr.upper():
-            sit_label = "5v4 PP"
+            sit_label = "4v5 PP"
             pen_side  = "away"
         elif pen_team_abbr == home_abbr.upper():
-            sit_label = "4v5 PP"
+            sit_label = "5v4 PP"
             pen_side  = "home"
         else:
             sit_label = "PP"
@@ -989,11 +983,11 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
                     for pen in nhl_pen_data if not pen.get("is_no_pp", True)}
 
     def _pen_arrow(pen_side):
-        # XvY = away_skaters v home_skaters
-        # away took penalty → away short (4) → home PP → 4v5 PP
-        # home took penalty → home short (4) → away PP → 5v4 PP
-        if pen_side == "away":  return "5v5 → 4v5 PP"
-        if pen_side == "home":  return "5v5 → 5v4 PP"
+        # NHL eventOwnerTeamId = team that DREW/benefited from penalty
+        # pen_side="away" → away drew → home committed → home short → 5v4 PP
+        # pen_side="home" → home drew → away committed → away short → 4v5 PP
+        if pen_side == "away":  return "5v5 → 5v4 PP"
+        if pen_side == "home":  return "5v5 → 4v5 PP"
         return "5v5 → PP"
 
     pp_windows = [(ws, we, wsit) for (ws, we, wsit) in windows if "PP" in wsit]
