@@ -973,32 +973,48 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     plays.sort(key=lambda x: x["seq"])
 
     # ── Tag penalty plays that caused a confirmed PP ───────────────────────
-    # Three-stage pipeline:
+    # Option E pipeline — two stages:
     #
-    # Stage 0 — Coincidental pre-processing:
-    #   Group ESPN penalty plays by 5-second buckets. For each bucket,
-    #   pair home vs away penalties. min(n_home, n_away) pairs cancel
-    #   (coincidental) and are skipped. Remaining are PP-causing.
+    # Stage 1A — Mirror text detection (coincidental filter):
+    #   Coincidental pairs in ESPN always appear as text mirrors:
+    #   "A [infraction] against B" paired with "B [infraction] against A".
+    #   Detected by requiring ALL words after "against" in play X to appear
+    #   before "against" in play Y and vice versa (full name crossover).
+    #   Mirror pairs at same elapsed (±5s) are marked is_coincidental=True.
     #
-    # Stage 1 — Primary: NHL penalty matching ±90s with direction check:
-    #   nhl_side="home" → home drew → away committed → only match away plays
-    #   nhl_side="away" → away drew → home committed → only match home plays
-    #   Increased from ±30s to ±90s: ESPN logs at infraction, NHL at faceoff
-    #   (~20-80s gap in production). Direction check filters wrong-team matches.
+    # Stage 1B — One-NHL-penalty-one-tag (±90s, direction check):
+    #   Each non-coincidental NHL penalty can be claimed by at most ONE ESPN
+    #   play. Once claimed, subsequent plays at the same time get no match.
+    #   Tolerance raised to ±90s: ESPN logs at infraction, NHL at faceoff.
+    #   Direction check (nhl_side → expected committer) applied when team known.
     #
-    # Stage 2 — Fallback: Condition A only (inside PP window):
-    #   Used when NHL penalty data is missing (e.g. very short PPs like Thompson).
-    #   parse_espn_penalties now builds ESPN PP windows for these cases.
-    #   Condition B (forward 120s) removed — it caused coincidental over-tagging.
+    # Stage 2 — Condition A fallback (inside PP window):
+    #   For penalties with no NHL data (e.g. very short PPs like Thompson),
+    #   parse_espn_penalties builds ESPN PP windows. Condition A catches them.
 
-    from collections import defaultdict
+    def _is_mirror(text_a, text_b):
+        """Coincidental mirror: ALL words after 'against' in A must appear
+        before 'against' in B, and vice versa. Requires full name crossover —
+        resistant to partial/generic word matches."""
+        a, b = text_a.lower(), text_b.lower()
+        if " against " not in a or " against " not in b:
+            return False
+        a_before, a_after = a.split(" against ", 1)
+        b_before, b_after = b.split(" against ", 1)
+        a_after_words  = set(a_after.split())
+        b_after_words  = set(b_after.split())
+        a_before_words = set(a_before.split())
+        b_before_words = set(b_before.split())
+        forward  = bool(a_after_words) and a_after_words <= b_before_words
+        backward = bool(b_after_words) and b_after_words <= a_before_words
+        return forward and backward
 
     nhl_pen_data = nhl_data.get("penalties", [])
     pp_nhl_pens  = {pen["elapsed"]: pen
                     for pen in nhl_pen_data if not pen.get("is_no_pp", True)}
 
     def _pen_arrow(pen_side):
-        # pen_side from NHL = team that DREW/benefited
+        # pen_side = team that DREW/benefited from the penalty (NHL convention)
         # away drew → home committed → home short → 5v4 PP
         # home drew → away committed → away short → 4v5 PP
         if pen_side == "away":  return "5v5 → 5v4 PP"
@@ -1007,33 +1023,30 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
 
     pp_windows = [(ws, we, wsit) for (ws, we, wsit) in windows if "PP" in wsit]
 
-    # Stage 0: detect coincidental pairs
-    pen_by_bucket = defaultdict(list)
-    for play in plays:
-        if is_espn_penalty(play["type_id"]):
-            pen_by_bucket[play["elapsed"] // 5].append(play)
-
-    for bucket_plays in pen_by_bucket.values():
-        # pen_team = committed team abbreviation (from ESPN team field)
-        homes = [p for p in bucket_plays
-                 if p["pen_team"] and p["pen_team"] == home_abbr.upper()]
-        aways = [p for p in bucket_plays
-                 if p["pen_team"] and p["pen_team"] == away_abbr.upper()]
-        n_cancel = min(len(homes), len(aways))
-        for i in range(n_cancel):
-            homes[i]["is_coincidental"] = True
-            aways[i]["is_coincidental"] = True
+    # Stage 1A: detect coincidental mirror pairs
+    pen_plays = [(i, p) for i, p in enumerate(plays) if is_espn_penalty(p["type_id"])]
+    for ii, (i, p1) in enumerate(pen_plays):
+        for jj, (j, p2) in enumerate(pen_plays):
+            if ii >= jj:
+                continue
+            if abs(p1["elapsed"] - p2["elapsed"]) > 5:
+                continue
+            if _is_mirror(p1.get("text", ""), p2.get("text", "")):
+                plays[i]["is_coincidental"] = True
+                plays[j]["is_coincidental"] = True
 
     # Diagnostic capture
     _diag = {
         "pp_windows":    list(pp_windows),
         "nhl_penalties": [{"elapsed": et,
                            "pen_side": p["pen_side"],
-                           "desc":     p.get("desc_key",""),
-                           "dur_min":  p.get("duration_min","?")}
+                           "desc":     p.get("desc_key", ""),
+                           "dur_min":  p.get("duration_min", "?")}
                           for et, p in sorted(pp_nhl_pens.items())],
         "penalty_plays": [],
     }
+
+    claimed_nhl = set()  # elapsed values of NHL penalties already claimed
 
     for play in plays:
         if not is_espn_penalty(play["type_id"]):
@@ -1043,7 +1056,7 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
                 "clock": play["clock"], "period": play["period_label"],
                 "type": play["type_text"], "type_id": play["type_id"],
                 "elapsed": play["elapsed"], "tagged": False,
-                "reason": "coincidental pair — skipped",
+                "reason": "mirror coincidental — skipped",
             })
             continue
 
@@ -1053,9 +1066,11 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
                           "home" if pen_team == home_abbr.upper() else "")
         match_reason   = "no match"
 
-        # Stage 1: primary NHL ±90s with direction check
+        # Stage 1B: primary NHL ±90s, direction check, one-claim per penalty
         best_pen, best_gap = None, 91
         for et, pen in pp_nhl_pens.items():
+            if et in claimed_nhl:
+                continue
             gap = abs(pel - et)
             if gap >= best_gap:
                 continue
@@ -1063,12 +1078,13 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             expected_committer = "away" if nhl_side == "home" else "home"
             if committed_side and committed_side != expected_committer:
                 continue
-            best_gap, best_pen = gap, pen
+            best_gap, best_pen = gap, (et, pen)
 
         if best_pen:
+            claimed_nhl.add(best_pen[0])
             play["is_pp_cause"] = True
-            play["pp_arrow"]    = _pen_arrow(best_pen["pen_side"])
-            match_reason = f"NHL primary {best_gap}s (dir match)"
+            play["pp_arrow"]    = _pen_arrow(best_pen[1]["pen_side"])
+            match_reason = f"NHL primary {best_gap}s (claimed)"
         else:
             # Stage 2: Condition A only — inside PP window
             for ws, we, wsit in pp_windows:
@@ -1170,7 +1186,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL `{nhl_id}`" if nhl_id
+        f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
 
@@ -1324,20 +1340,20 @@ if st.session_state.view == "game":
         if is_pp_cause:
             strength_display = p.get("pp_arrow") or sit
             wall_et = p.get("wall_et", "")
-            time_row = (f'<p style="margin:4px 0">🕐 <b>Time (ET):</b> <code>{wall_et}</code></p>'
+            time_row = (f'<p style="margin:12px 0 0 0;font-size:1rem">🕐 <b>Time (ET):</b> <code>{wall_et}</code></p>'
                         if wall_et and wall_et != "N/A" else "")
-            strength_row = (f'<p style="margin:4px 0">⚖️ <b>Strength:</b> <code>{strength_display}</code></p>'
+            strength_row = (f'<p style="margin:12px 0 0 0;font-size:1rem">⚖️ <b>Strength:</b> <code>{strength_display}</code></p>'
                             if strength_display else "")
             st.markdown(f"""
-<div style="border-left:3px solid #BA7517;padding-left:12px;margin-bottom:0;border-radius:0">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-    <span style="font-size:1.5rem;font-weight:600;line-height:1.2">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</span>
+<div style="border-left:3px solid #BA7517;padding-left:12px;margin:20px 0 0 0;border-radius:0">
+  <div style="display:flex;align-items:center;gap:10px;margin:0 0 12px 0">
+    <span style="font-size:1.5rem;font-weight:600;line-height:1.3">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</span>
     <span style="background:#FAEEDA;color:#854F0B;font-size:12px;font-weight:500;padding:2px 8px;border-radius:4px;white-space:nowrap">PP Cause</span>
   </div>
-  <p style="margin:4px 0">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
-  <p style="margin:4px 0">🎯 <b>Event:</b> {p.get('type_text')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
   {strength_row}
-  <p style="margin:4px 0">📋 <b>Play:</b> {p.get('text')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
   {time_row}
 </div>
 """, unsafe_allow_html=True)
