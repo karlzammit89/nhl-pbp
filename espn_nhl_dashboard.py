@@ -678,12 +678,14 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
         is_pp = "PP" in w_sit
         if is_pp:
             if dur < MIN_PP_DURATION:
-                base = w_sit.replace(" PP", "").strip()
-                validated.append([w_start, w_end, base or "5v5"])
+                # PP window too short to be real — replace with 5v5.
+                # "5v5" not the bare skater count: if no real PP, ice was even
+                # strength. Bare "4v5" is misleading and passes the PP filter.
+                validated.append([w_start, w_end, "5v5"])
                 continue
             if not has_valid_penalty(w_start):
-                base = w_sit.replace(" PP", "").strip()
-                validated.append([w_start, w_end, base or "5v5"])
+                # No matching penalty found — same reasoning: default to 5v5.
+                validated.append([w_start, w_end, "5v5"])
                 continue
         validated.append(list(w))
 
@@ -1257,7 +1259,7 @@ if st.session_state.view == "game":
                     if not p["wall_dt"] or START_DT is None or END_DT is None: return False
                     if not (START_DT <= p["wall_dt"] <= END_DT): return False
                 if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
-                if USE_PP_FILTER and "PP" not in sit and not p.get("is_pp_cause", False): return False
+                if USE_PP_FILTER and " PP" not in sit and not p.get("is_pp_cause", False): return False
                 if USE_GP_FILTER and "EN" not in sit: return False
                 return True
             st.session_state.filtered_plays  = [p for p in plays if passes(p)]
