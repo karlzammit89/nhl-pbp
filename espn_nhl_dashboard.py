@@ -839,7 +839,7 @@ def find_nhl_situation(espn_play, windows):
     for (ws, we, wsit) in windows:
         if ws <= elapsed < we:
             return wsit
-    if windows and elapsed >= windows[-1][0]:
+    if windows and windows[-1][0] <= elapsed < windows[-1][1]:
         return windows[-1][2]
     best, best_gap = None, FUZZY_SECONDS + 1
     for (ws, we, wsit) in windows:
@@ -1165,6 +1165,21 @@ if st.session_state.view == "game":
         )
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # Read live score from cached scoreboard (TTL=30s) — falls back to
+    # session state if the event is not found or the fetch fails.
+    _live_away = st.session_state.away_score
+    _live_home = st.session_state.home_score
+    try:
+        _board = fetch_scoreboard(st.session_state.sched_date.strftime("%Y-%m-%d"))
+        for _g in _board:
+            if str(_g["event_id"]) == str(st.session_state.event_id):
+                _live_away = _g["away_score"]
+                _live_home = _g["home_score"]
+                break
+    except Exception:
+        pass
+
     head_c1, head_c2, head_c3 = st.columns([1, 6, 1])
     with head_c1:
         if st.session_state.away_logo:
@@ -1174,9 +1189,9 @@ if st.session_state.view == "game":
             <div style="display:flex;align-items:center;justify-content:center;
                 font-weight:800;font-size:clamp(20px,3vw,32px);gap:15px;text-align:center;">
                 <span>{st.session_state.away}</span>
-                <span style="color:#888;">{st.session_state.away_score}</span>
+                <span style="color:#888;">{_live_away}</span>
                 <span style="color:#444;">-</span>
-                <span style="color:#888;">{st.session_state.home_score}</span>
+                <span style="color:#888;">{_live_home}</span>
                 <span>{st.session_state.home}</span>
             </div>
         """, unsafe_allow_html=True)
@@ -1186,7 +1201,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL `{nhl_id}`" if nhl_id
+        f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
 
