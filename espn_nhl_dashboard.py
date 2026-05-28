@@ -563,7 +563,36 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
         key=lambda p: (p["period"], p["elapsed"], p["sort_order"])
     )
 
-    # ── Phase 1: raw gapless windows ──────────────────────────────────────
+    # ── Phase 1: raw gapless windows with lag-artifact detection ─────────
+    # The NHL API occasionally emits a stale situationCode on a single play
+    # just before a real situation change — a lagged "blip" from the previous
+    # state. These produce phantom PP/4v5 windows covering 1-20 seconds that
+    # Phase 4 passes (a real penalty IS nearby) but the situation was never
+    # actually active.
+    #
+    # Detection: a play is a lag artifact when ALL of:
+    #   1. Its sit code differs from both the previous AND next play's codes
+    #   2. The previous and next play share the same code (isolated blip)
+    #   3. Its duration (distance to next play) is < LAG_MAX_DURATION seconds
+    #      — real situations always last ≥ 120s (minor), so < 30s = lag
+    LAG_MAX_DURATION = 30  # seconds — any blip shorter than this is lag
+
+    cleaned_plays = []
+    n = len(sorted_plays)
+    for i, p in enumerate(sorted_plays):
+        prev_sit_code = sorted_plays[i-1]["sit_code"] if i > 0 else None
+        next_sit_code = sorted_plays[i+1]["sit_code"] if i < n-1 else None
+        next_elapsed  = sorted_plays[i+1]["elapsed"]  if i < n-1 else None
+        duration      = (next_elapsed - p["elapsed"]) if next_elapsed is not None else 9999
+        if (prev_sit_code is not None
+                and next_sit_code is not None
+                and p["sit_code"] != prev_sit_code
+                and p["sit_code"] != next_sit_code
+                and prev_sit_code == next_sit_code
+                and duration < LAG_MAX_DURATION):
+            continue   # lag artifact — skip, don't build a window from this play
+        cleaned_plays.append(p)
+
     raw_windows  = []
     prev_sit     = None
     win_start    = 0
@@ -571,7 +600,7 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
     win_sit      = ""
     win_boundary = False
 
-    for p in sorted_plays:
+    for p in cleaned_plays:
         sit = p["sit_code"]
         if sit == prev_sit:
             continue
@@ -665,11 +694,36 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
     valid_penalty_times = sorted(
         p["elapsed"] for p in nhl_penalties if not p["is_no_pp"]
     )
+    # Also build a map for tail-capping: elapsed → duration_sec
+    valid_penalty_map = {
+        p["elapsed"]: p["duration_sec"]
+        for p in nhl_penalties if not p["is_no_pp"]
+    }
+    # Maximum allowed PP window duration: 5-min major + 10s buffer
+    PP_MAX_CAP = 310
 
     def has_valid_penalty(win_start):
         lo = win_start - MAX_PENALTY_LOOKBACK
         hi = win_start + 60
         return any(lo <= t <= hi for t in valid_penalty_times)
+
+    def cap_pp_end(win_start, win_end):
+        """Cap a PP window end at penalty_start + duration + 10s buffer.
+        Prevents Phase 3 merge contamination: a lagged PP-coded play after
+        the PP expired (faceoff with stale sit code) extends the merged window
+        past the true expiry. Capping at the penalty's known duration stops this.
+        Applies the NEAREST matching penalty's duration.
+        """
+        lo = win_start - MAX_PENALTY_LOOKBACK
+        hi = win_start + 60
+        candidates = [(et, valid_penalty_map[et])
+                      for et in valid_penalty_times
+                      if lo <= et <= hi]
+        if not candidates:
+            return win_end
+        pen_et, pen_dur = min(candidates, key=lambda x: abs(x[0] - win_start))
+        cap = pen_et + pen_dur + 10
+        return min(win_end, cap)
 
     validated = []
     for w in merged:
@@ -687,6 +741,14 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
                 # No matching penalty found — same reasoning: default to 5v5.
                 validated.append([w_start, w_end, "5v5"])
                 continue
+            # Tail-cap: limit window end to penalty_start + duration + buffer
+            # to prevent Phase 3 merge contamination extending past expiry
+            capped_end = cap_pp_end(w_start, w_end)
+            if capped_end > w_start:
+                validated.append([w_start, capped_end, w_sit])
+            else:
+                validated.append([w_start, w_end, "5v5"])
+            continue
         validated.append(list(w))
 
     # Merge after validation
@@ -1203,7 +1265,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL `{nhl_id}`" if nhl_id
+        f"📡 NHL `{nhl_id}` + ESPN hybrid" if nhl_id
         else "📡 ESPN only — NHL ID not found"
     )
 
@@ -1356,7 +1418,11 @@ if st.session_state.view == "game":
             st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
             st.markdown(f"🎯 **Event:** {p.get('type_text')}")
             if sit:
-                st.markdown(f"⚖️ **Strength:** `{sit}`")
+                # Generic "PP" (no direction) means ESPN team field was absent.
+                # Display as blank rather than the misleading "PP" label.
+                sit_display = "" if sit == "PP" else sit
+                if sit_display:
+                    st.markdown(f"⚖️ **Strength:** `{sit_display}`")
             st.markdown(f"📋 **Play:** {p.get('text')}")
             if p.get("wall_et") and p.get("wall_et") != "N/A":
                 st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
