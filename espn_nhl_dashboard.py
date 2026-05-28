@@ -323,32 +323,40 @@ def fetch_nhl_plays(nhl_game_id, cache_bucket: int = 0):
             drawn_id       = details.get("drawnByPlayerId")    # Option D field
             event_team_id  = details.get("eventOwnerTeamId")  # team that took penalty
 
-            # Determine penalty side (current logic — eventOwnerTeamId only)
+            # Determine penalty side — three-tier resolution:
+            #   1. eventOwnerTeamId (primary — always preferred)
+            #   2. Option A: committedByPlayerId → rosterSpots
+            #      committedByPlayerId = player who DREW/benefited (NHL naming is
+            #      inverted vs natural language). Their team = drawing team = pen_side.
+            #   3. Option D: drawnByPlayerId → rosterSpots
+            #      drawnByPlayerId = player who COMMITTED (also inverted naming).
+            #      Their team = committing team → other team = drawing team.
+            # Convention verified Game 4: A+D each matched pen_side on 8/8 penalties.
             pen_side = ""
             if event_team_id == teams["away_id"]:
                 pen_side = "away"
             elif event_team_id == teams["home_id"]:
                 pen_side = "home"
 
-            # Option A diagnostic: can committedByPlayerId resolve direction?
-            opt_a_result = ""
-            if committed_id and roster_map:
+            # Option A: fallback via committedByPlayerId → rosterSpots
+            if not pen_side and committed_id and roster_map:
                 pid_team = roster_map.get(committed_id)
                 if pid_team == teams["away_id"]:
-                    opt_a_result = "away"
+                    pen_side = "away"
                 elif pid_team == teams["home_id"]:
-                    opt_a_result = "home"
+                    pen_side = "home"
 
-            # Option D diagnostic: can drawnByPlayerId resolve direction?
-            # drawnByPlayerId = player who drew/benefited → their team gets PP
-            # so the OTHER team committed → other team is short
-            opt_d_result = ""
-            if drawn_id and roster_map:
+            # Option D: final fallback via drawnByPlayerId → rosterSpots
+            if not pen_side and drawn_id and roster_map:
                 drawn_team = roster_map.get(drawn_id)
                 if drawn_team == teams["away_id"]:
-                    opt_d_result = "home"  # away drew → home committed → home short
+                    pen_side = "home"   # away committed → home drew → home benefited
                 elif drawn_team == teams["home_id"]:
-                    opt_d_result = "away"  # home drew → away committed → away short
+                    pen_side = "away"   # home committed → away drew → away benefited
+
+            # Capture resolved values for diagnostic expander
+            opt_a_result = pen_side if (not event_team_id and committed_id) else ""
+            opt_d_result = pen_side if (not event_team_id and not committed_id and drawn_id) else ""
 
             penalties.append({
                 "elapsed":        elapsed,
@@ -899,6 +907,13 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
     nhl_windows = [list(w) for w in final_nhl]
 
     for (es, ee, esit) in authoritative:
+        # Fix 2: apply tail-cap to authoritative window before insertion.
+        # Phase 4 already caps sit-code windows; Phase 5 must obey the same
+        # rule so inserted windows cannot run past the penalty true expiry.
+        ee = cap_pp_end(es, ee)
+        if ee <= es:
+            continue  # cap eliminated window entirely — skip
+
         new_windows = []
         for (ns, ne, nsit) in nhl_windows:
             if ne <= es or ns >= ee:
@@ -906,15 +921,20 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
                 new_windows.append([ns, ne, nsit])
                 continue
 
-            # NHL window already says PP with no EN → trust NHL's specifics
-            if "PP" in nsit and "EN" not in nsit:
+            # Fix 1+3: preserve any window that already carries a directional
+            # PP label (" PP" with a leading space).
+            #   "5v4 PP", "4v5 PP", "5v3 PP", "4v3 PP" → kept (directional)
+            #   "6v5 Away EN PP", "5v6 Home EN PP"      → kept (EN+PP, more specific)
+            #   "PP"                                     → overridden (generic)
+            #   "6v5 Away EN" (bare EN, no PP)           → overridden (less specific)
+            if " PP" in nsit:
                 new_windows.append([ns, ne, nsit])
                 continue
 
             # Override the overlapping portion:
-            #   pre  = NHL portion before PP starts
-            #   mid  = overlap → replaced with ESPN PP label
-            #   post = NHL portion after PP ends
+            #   pre  = NHL portion before authoritative window starts
+            #   mid  = overlap → replaced with authoritative label
+            #   post = NHL portion after authoritative window ends
             pre_start, pre_end   = ns, max(ns, es)
             mid_start, mid_end   = max(ns, es), min(ne, ee)
             post_start, post_end = min(ne, ee), ne
@@ -937,6 +957,26 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
         else:
             re_merged.append(list(w))
     final_nhl = [(w[0], w[1], w[2]) for w in re_merged if w[1] > w[0]]
+
+    # ── Phase 6: sit code scan — recover direction on remaining generic PP ─
+    # Any window still labelled "PP" after Phase 5 has no direction from
+    # either penalty source. The NHL plays inside the window carry directional
+    # sit codes — the same codes Phase 1 already processed correctly.
+    # Read the first play sit_code inside each generic window and derive
+    # direction via parse_nhl_situation(). Guard: only apply if " PP" in
+    # result (directional). Skips silently when no play is found.
+    final_nhl = list(final_nhl)
+    for i, (ws, we, wsit) in enumerate(final_nhl):
+        if wsit != "PP":
+            continue
+        first_play = next(
+            (p for p in sorted_plays if ws <= p["elapsed"] < we),
+            None
+        )
+        if first_play:
+            derived = parse_nhl_situation(first_play["sit_code"])
+            if " PP" in derived:
+                final_nhl[i] = (ws, we, derived)
 
     return final_nhl
 
