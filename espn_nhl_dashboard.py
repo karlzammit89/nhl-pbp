@@ -354,9 +354,31 @@ def fetch_nhl_plays(nhl_game_id, cache_bucket: int = 0):
                 elif drawn_team == teams["home_id"]:
                     pen_side = "away"   # home committed → away drew → away benefited
 
-            # Capture resolved values for diagnostic expander
-            opt_a_result = pen_side if (not event_team_id and committed_id) else ""
-            opt_d_result = pen_side if (not event_team_id and not committed_id and drawn_id) else ""
+            # ── Diagnostic capture — always run regardless of pen_side source ─
+            # diag_source: which tier actually resolved pen_side
+            # diag_a/diag_d: roster lookup result for each player ID computed
+            #   independently so the expander shows whether A+D WOULD resolve
+            #   direction even when the primary source already did.
+            if event_team_id in (teams["away_id"], teams["home_id"]):
+                diag_source = "primary"
+            elif committed_id and roster_map and roster_map.get(committed_id):
+                diag_source = "Option A"
+            elif drawn_id and roster_map and roster_map.get(drawn_id):
+                diag_source = "Option D"
+            else:
+                diag_source = "unresolved"
+
+            diag_a = ""
+            if committed_id and roster_map:
+                t = roster_map.get(committed_id)
+                if t == teams["away_id"]:   diag_a = "away"
+                elif t == teams["home_id"]: diag_a = "home"
+
+            diag_d = ""
+            if drawn_id and roster_map:
+                t = roster_map.get(drawn_id)
+                if t == teams["away_id"]:   diag_d = "home"
+                elif t == teams["home_id"]: diag_d = "away"
 
             penalties.append({
                 "elapsed":        elapsed,
@@ -369,11 +391,12 @@ def fetch_nhl_plays(nhl_game_id, cache_bucket: int = 0):
                 "is_no_pp":       desc_key in NO_PP_PENALTY_TYPES,
                 "type_key":       type_key,
                 "sort_order":     p.get("sortOrder", 0),
-                # Diagnostic fields — not used in direction logic yet
+                # Diagnostic fields — not used in direction logic
                 "committed_id":   committed_id,
                 "drawn_id":       drawn_id,
-                "opt_a_result":   opt_a_result,   # direction from rosterSpots+committedId
-                "opt_d_result":   opt_d_result,   # direction from rosterSpots+drawnId
+                "diag_source":    diag_source,    # which tier resolved pen_side
+                "diag_a":         diag_a,         # roster lookup via committedId
+                "diag_d":         diag_d,         # roster lookup via drawnId
             })
 
     return {
@@ -965,7 +988,9 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
     # Read the first play sit_code inside each generic window and derive
     # direction via parse_nhl_situation(). Guard: only apply if " PP" in
     # result (directional). Skips silently when no play is found.
-    final_nhl = list(final_nhl)
+    final_nhl   = list(final_nhl)
+    opt_c_log   = []   # diagnostic: one entry per generic PP window examined
+
     for i, (ws, we, wsit) in enumerate(final_nhl):
         if wsit != "PP":
             continue
@@ -974,9 +999,33 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
             None
         )
         if first_play:
-            derived = parse_nhl_situation(first_play["sit_code"])
+            sit_code = first_play["sit_code"]
+            derived  = parse_nhl_situation(sit_code)
             if " PP" in derived:
                 final_nhl[i] = (ws, we, derived)
+                opt_c_log.append({
+                    "ws": ws, "we": we,
+                    "before": "PP", "after": derived,
+                    "sit_code": sit_code, "elapsed": first_play["elapsed"],
+                    "converted": True,
+                })
+            else:
+                opt_c_log.append({
+                    "ws": ws, "we": we,
+                    "before": "PP", "after": "PP",
+                    "sit_code": sit_code or "—", "elapsed": first_play["elapsed"],
+                    "converted": False,
+                })
+        else:
+            opt_c_log.append({
+                "ws": ws, "we": we,
+                "before": "PP", "after": "PP",
+                "sit_code": "—", "elapsed": "—",
+                "converted": False,
+            })
+
+    # Attach log to nhl_data so the diagnostic expander can read it
+    nhl_data["_opt_c_log"] = opt_c_log
 
     return final_nhl
 
@@ -1117,9 +1166,6 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "emoji":        get_play_emoji(type_text),
             "is_pp_cause":  False,
             "pp_arrow":     "",
-            # Option B field capture — participants[] for diagnostic verification
-            # NOT yet used for direction logic
-            "participants": p.get("participants") or [],
         })
 
     plays.sort(key=lambda x: x["seq"])
@@ -1190,19 +1236,22 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     # Diagnostic capture
     _diag = {
         "pp_windows":    list(pp_windows),
-        "nhl_penalties": [{"elapsed":  et,
-                           "pen_side": p["pen_side"],
-                           "desc":     p.get("desc_key", ""),
-                           "dur_min":  p.get("duration_min", "?"),
-                           "opt_a":    p.get("opt_a_result", "—"),   # from rosterSpots+committedId
-                           "opt_d":    p.get("opt_d_result", "—"),   # from rosterSpots+drawnId
-                           "committed_id": p.get("committed_id") or "—",
-                           "drawn_id":     p.get("drawn_id") or "—"}
+        "nhl_penalties": [{"elapsed":       et,
+                           "pen_side":      p["pen_side"],
+                           "desc":          p.get("desc_key", ""),
+                           "dur_min":       p.get("duration_min", "?"),
+                           "diag_source":   p.get("diag_source", "—"),
+                           "diag_a":        p.get("diag_a", "—"),
+                           "diag_d":        p.get("diag_d", "—"),
+                           "committed_id":  p.get("committed_id") or "—",
+                           "drawn_id":      p.get("drawn_id") or "—"}
                           for et, p in sorted(pp_nhl_pens.items())],
         "penalty_plays": [],
-        # Option A/D field availability
+        # rosterSpots availability
         "roster_spots_count": nhl_data.get("roster_spots_raw", "not in response"),
         "roster_map_size":    len(nhl_data.get("roster_map", {})),
+        # Option C conversion log from Phase 6
+        "opt_c_log":          nhl_data.get("_opt_c_log", []),
     }
 
     claimed_nhl = set()  # elapsed values of NHL penalties already claimed
@@ -1225,23 +1274,7 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
                           "home" if pen_team == home_abbr.upper() else "")
         match_reason   = "no match"
 
-        # Option B diagnostic: check participants[] on this ESPN play
-        # participants[].type == "penaltyOn" → athlete.team.abbreviation
-        # NOT yet used for direction logic — captured for expander verification
-        opt_b_result = ""
-        raw_participants = play.get("participants") or []
-        for part in raw_participants:
-            if part.get("type") == "penaltyOn":
-                ath = part.get("athlete") or {}
-                ath_team = (ath.get("team") or {})
-                opt_b_abbr = ath_team.get("abbreviation", "").upper()
-                if opt_b_abbr == away_abbr.upper():
-                    opt_b_result = "away"
-                elif opt_b_abbr == home_abbr.upper():
-                    opt_b_result = "home"
-                elif opt_b_abbr:
-                    opt_b_result = f"unknown:{opt_b_abbr}"
-                break
+
 
         # Stage 1B: primary NHL ±90s, direction check, one-claim per penalty
         best_pen, best_gap = None, 91
@@ -1276,7 +1309,6 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "type":       play["type_text"], "type_id": play["type_id"],
             "elapsed":    pel, "tagged": play["is_pp_cause"], "reason": match_reason,
             "espn_team":  pen_team or "—",
-            "opt_b":      opt_b_result or "—",  # from participants[].penaltyOn.athlete.team
         })
 
     st.session_state["_pen_diag"] = _diag
@@ -1384,73 +1416,112 @@ if st.session_state.view == "game":
         else "📡 ESPN only — NHL ID not found"
     )
 
-    # ── Penalty tagging + field verification diagnostic ───────────────────
-    # Collapsed by default. Shows PP windows, NHL penalties, ESPN penalty
-    # tagging, and field verification for Options A/B/D.
-    # Options A/B/D are NOT yet used for direction logic — they are captured
-    # here so each field can be confirmed populated from real API responses
-    # before being promoted to direction logic.
+    # ── Penalty tagging diagnostic ────────────────────────────────────────
+    # Four sections:
+    #   1. PP windows — directional vs generic
+    #   2. NHL penalties — direction source + A/D roster lookup readiness
+    #   3. Option C — Phase 6 sit code conversions
+    #   4. ESPN penalty plays — match reason
     diag = st.session_state.get("_pen_diag", {})
     if diag:
         with st.expander("🔬 Penalty tagging diagnostic", expanded=False):
 
             # ── Section 1: PP windows ──────────────────────────────────────
             pp_wins = diag.get("pp_windows", [])
-            st.markdown(f"**PP windows ({len(pp_wins)}):**")
+            directional = sum(1 for _,_,s in pp_wins if " PP" in s)
+            generic     = sum(1 for _,_,s in pp_wins if s == "PP")
+            st.markdown(
+                f"**PP windows ({len(pp_wins)}) — "
+                f"{directional} directional ✅ · {generic} generic ⚠️:**"
+            )
             for ws, we, wsit in pp_wins[:30]:
                 icon = "✅" if " PP" in wsit else "⚠️"
-                st.write(f"  {icon} [{ws}s – {we}s] `{wsit}`")
+                dur  = we - ws
+                st.write(f"  {icon} [{ws}s – {we}s] `{wsit}` ({dur}s)")
 
             st.divider()
 
-            # ── Section 2: NHL penalties with Option A/D fields ────────────
-            nhl_pens = diag.get("nhl_penalties", [])
-            st.markdown(f"**NHL PP-causing penalties — Option A/D field check ({len(nhl_pens)}):**")
+            # ── Section 2: NHL penalties — direction source + A/D readiness ─
+            nhl_pens     = diag.get("nhl_penalties", [])
             roster_count = diag.get("roster_spots_count", "?")
             roster_size  = diag.get("roster_map_size", 0)
+            st.markdown(f"**NHL PP-causing penalties ({len(nhl_pens)}):**")
+
             if roster_count == 0 or roster_size == 0:
-                st.warning(f"⚠️ rosterSpots: {roster_count} entries in response — "
-                           f"Options A and D cannot resolve direction from this game")
+                st.warning(
+                    f"⚠️ rosterSpots: {roster_count} entries — "
+                    f"Options A+D fallback unavailable for this game"
+                )
             else:
-                st.success(f"✅ rosterSpots: {roster_count} entries in response, "
-                           f"{roster_size} valid playerId→teamId mappings")
+                st.success(
+                    f"✅ rosterSpots: {roster_count} entries, "
+                    f"{roster_size} valid — Options A+D fallback ready"
+                )
+
             if nhl_pens:
+                missing = sum(1 for np in nhl_pens if not np["pen_side"])
+                if missing:
+                    st.warning(f"⚠️ {missing} penalt{'y' if missing==1 else 'ies'} "
+                               f"with pen_side unresolved")
                 for np in nhl_pens:
-                    a_icon = "✅" if np["opt_a"] in ("away","home") else "❌"
-                    d_icon = "✅" if np["opt_d"] in ("away","home") else "❌"
-                    base  = f"  elapsed={np['elapsed']}s | {np['desc']} {np['dur_min']}min | " \
-                            f"current side={np['pen_side'] or '❌ MISSING'}"
-                    opt_a = f"| OptA(rosterSpots+committedId={np['committed_id']})={a_icon}{np['opt_a']}"
-                    opt_d = f"| OptD(rosterSpots+drawnId={np['drawn_id']})={d_icon}{np['opt_d']}"
-                    st.write(f"{base} {opt_a} {opt_d}")
+                    side = np["pen_side"] or "❌ MISSING"
+                    src  = np.get("diag_source", "—")
+                    # Roster readiness: show whether A+D WOULD resolve if needed
+                    a_res  = np.get("diag_a", "—")
+                    d_res  = np.get("diag_d", "—")
+                    a_rdy  = "✅" if a_res in ("away","home") else "—"
+                    d_rdy  = "✅" if d_res in ("away","home") else "—"
+                    cid    = np.get("committed_id","—")
+                    did    = np.get("drawn_id","—")
+                    st.write(
+                        f"  elapsed={np['elapsed']}s | {np['desc']} {np['dur_min']}min"
+                        f" | side={side} via {src}"
+                        f" | A-ready={a_rdy}({cid}→{a_res})"
+                        f" | D-ready={d_rdy}({did}→{d_res})"
+                    )
             else:
                 st.warning("No NHL PP-causing penalties found")
 
             st.divider()
 
-            # ── Section 3: ESPN penalties with Option B field ──────────────
+            # ── Section 3: Option C conversions (Phase 6 sit code scan) ────
+            opt_c = diag.get("opt_c_log", [])
+            converted = [e for e in opt_c if e["converted"]]
+            skipped   = [e for e in opt_c if not e["converted"]]
+            st.markdown(
+                f"**Option C — Phase 6 sit code scan "
+                f"({len(converted)} converted · {len(skipped)} skipped):**"
+            )
+            if not opt_c:
+                st.write("  No generic PP windows remained after Phase 5")
+            for e in opt_c:
+                icon = "✅" if e["converted"] else "⚠️"
+                sc   = e["sit_code"]
+                el   = e["elapsed"]
+                after = e["after"]
+                reason = (f"sit={sc} at {el}s → {after}"
+                          if e["converted"]
+                          else f"sit={sc} at {el}s → no PP direction")
+                st.write(
+                    f"  {icon} [{e['ws']}s–{e['we']}s] PP → {after} | {reason}"
+                )
+
+            st.divider()
+
+            # ── Section 4: ESPN penalty plays ──────────────────────────────
             pens = diag.get("penalty_plays", [])
-            st.markdown(f"**ESPN penalty plays — Option B field check ({len(pens)}):**")
-            b_populated = sum(1 for p in pens if p.get("opt_b","—") not in ("—",""))
-            b_empty     = sum(1 for p in pens if p.get("opt_b","—") == "—")
-            if b_populated:
-                st.success(f"✅ participants[].penaltyOn.athlete.team: "
-                           f"populated on {b_populated}/{len(pens)} plays")
-            if b_empty:
-                st.warning(f"⚠️ participants[].penaltyOn.athlete.team: "
-                           f"absent on {b_empty}/{len(pens)} plays — "
-                           f"Option B cannot resolve those")
+            tagged   = sum(1 for p in pens if p["tagged"])
+            untagged = len(pens) - tagged
+            st.markdown(
+                f"**ESPN penalty plays ({len(pens)}) — "
+                f"{tagged} tagged ✅ · {untagged} untagged ❌:**"
+            )
             for p in pens:
                 tag_icon = "✅" if p["tagged"] else "❌"
-                espn_team = p.get("espn_team","—")
-                opt_b     = p.get("opt_b","—")
-                b_icon    = "✅" if opt_b in ("away","home") else "❌"
                 st.write(
                     f"  {tag_icon} {p['period']} {p['clock']} | "
-                    f"id=`{p['type_id']}` `{p['type']}` elapsed={p['elapsed']}s "
-                    f"| ESPN team={espn_team} "
-                    f"| OptB(participants.penaltyOn.team)={b_icon}{opt_b} "
-                    f"→ {p['reason']}"
+                    f"id=`{p['type_id']}` `{p['type']}` elapsed={p['elapsed']}s"
+                    f" → {p['reason']}"
                 )
 
     st.divider()
