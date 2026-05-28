@@ -1269,6 +1269,33 @@ if st.session_state.view == "game":
         else "📡 ESPN only — NHL ID not found"
     )
 
+    # ── Penalty tagging diagnostic ─────────────────────────────────────────
+    # Collapsed by default — open to inspect raw PP windows, NHL penalties,
+    # and ESPN penalty tagging for any game. Used to confirm Bug C root cause.
+    diag = st.session_state.get("_pen_diag", {})
+    if diag:
+        with st.expander("🔬 Penalty tagging diagnostic", expanded=False):
+            pp_wins = diag.get("pp_windows", [])
+            st.markdown(f"**PP windows ({len(pp_wins)}):**")
+            for ws, we, wsit in pp_wins[:30]:
+                st.write(f"  [{ws}s – {we}s] `{wsit}`")
+
+            nhl_pens = diag.get("nhl_penalties", [])
+            st.markdown(f"**NHL PP-causing penalties ({len(nhl_pens)}):**")
+            if nhl_pens:
+                for np in nhl_pens:
+                    st.write(f"  elapsed={np['elapsed']}s | {np['desc']} {np['dur_min']}min"
+                             f" | side={np['pen_side']}")
+            else:
+                st.warning("No NHL PP-causing penalties found")
+
+            pens = diag.get("penalty_plays", [])
+            st.markdown(f"**ESPN penalty plays ({len(pens)}):**")
+            for p in pens:
+                icon = "✅" if p["tagged"] else "❌"
+                st.write(f"  {icon} {p['period']} {p['clock']} | id=`{p['type_id']}` "
+                         f"`{p['type']}` elapsed={p['elapsed']}s → {p['reason']}")
+
     st.divider()
 
     # ── Filters ───────────────────────────────────────────────────────────
