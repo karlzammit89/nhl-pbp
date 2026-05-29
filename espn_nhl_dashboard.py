@@ -416,20 +416,24 @@ ESPN_NO_PP_KEYWORDS = [
     "double minor to each", "roughing to each",
 ]
 
-def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
+def parse_espn_penalties(espn_plays, away_abbr, home_abbr, boxscore_map=None):
     """
-    Fallback penalty parser using ESPN play type.id for detection.
-    Uses is_espn_penalty(type_id) — the same confirmed ID set used for
-    is_pp_cause tagging — so any play detected as a penalty here is
-    consistent with what gets tagged in the feed.
+    ESPN penalty parser — Option B primary direction source.
+
+    Direction: ESPN team.id → boxscore_map → home/away (primary).
+    Fallback: team.abbreviation text match (secondary, often absent).
 
     Direction convention (matches NHL sit code XvY = away_sk v home_sk):
-      away team committed penalty → away short → 4v5 PP (4 away, 5 home)
-      home team committed penalty → home short → 5v4 PP (5 away, 4 home)
+      team.id = COMMITTING team.
+      pen_side = DRAWING team = opposite of committing team.
+      away committed → away short → home PP → 4v5 PP (4 away, 5 home)
+      home committed → home short → away PP → 5v4 PP (5 away, 4 home)
 
-    Duration: extracted from play text where present, default 120s (minor).
+    Duration: type.penaltyMinutes (primary) → text keywords → default 120s.
     """
     import re
+    if boxscore_map is None:
+        boxscore_map = {}
 
     penalties = []
     for p in espn_plays:
@@ -444,33 +448,50 @@ def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
         if any(kw in text for kw in ESPN_NO_PP_KEYWORDS):
             continue
 
-        # Determine duration from keyword match (longest first)
-        duration = None
+        # ── Duration resolution: type.penaltyMinutes primary ─────────────
+        # type.penaltyMinutes confirmed present in debugger (2, 4, 5, 10).
         is_dm = is_major = False
-        for key, dur in ESPN_PENALTY_DURATIONS:
-            if key in text:
-                duration = dur
-                is_dm    = (key == "double minor")
-                is_major = key in ("major", "match")
-                break
+        duration = None
+        type_mins = type_obj.get("penaltyMinutes") if isinstance(type_obj, dict) else None
+        if type_mins is not None:
+            try:
+                mins = int(type_mins)
+                if mins >= 10:
+                    duration = 0          # misconduct — no PP
+                elif mins == 5:
+                    duration = 300
+                    is_major = True
+                elif mins == 4:
+                    duration = 240
+                    is_dm    = True
+                else:
+                    duration = 120        # 2-min minor
+            except (ValueError, TypeError):
+                duration = None
 
-        # Fallback: extract numeric duration from "(X min)" patterns
+        # Fallback: keyword match in text
+        if duration is None:
+            for key, dur in ESPN_PENALTY_DURATIONS:
+                if key in text:
+                    duration = dur
+                    is_dm    = (key == "double minor")
+                    is_major = key in ("major", "match")
+                    break
+
+        # Fallback: numeric "(X min)" in text
         if duration is None:
             m = re.search(r"\((\d+)\s*min\)", text) or re.search(r"\((\d+):00\)", text)
             if m:
                 mins = int(m.group(1))
                 if mins == 4:
-                    duration = 240
-                    is_dm    = True
+                    duration = 240; is_dm = True
                 elif mins == 5:
-                    duration = 300
-                    is_major = True
+                    duration = 300; is_major = True
                 elif mins == 10:
-                    duration = 0      # misconduct — skip below
+                    duration = 0
                 else:
-                    duration = 120    # default 2-min minor
+                    duration = 120
 
-        # Final default — assume minor if nothing else found
         if duration is None:
             duration = 120
 
@@ -483,21 +504,28 @@ def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
         clock_val  = clock_obj.get("displayValue", "0:00") if isinstance(clock_obj, dict) else "0:00"
         elapsed    = espn_clock_to_seconds(clock_val, pnum)
 
-        team_obj      = p.get("team", {})
-        pen_team_abbr = team_obj.get("abbreviation", "").upper() if isinstance(team_obj, dict) else ""
+        # ── Direction: team.id → boxscore_map (primary, confirmed from debugger) ─
+        # team.id on ESPN penalty play = COMMITTING team (verified Game 4, 3/3 plays).
+        # pen_side = DRAWING team = opposite of committing team.
+        team_obj  = p.get("team", {}) if isinstance(p.get("team"), dict) else {}
+        team_id   = str(team_obj.get("id", ""))
+        committed_side = boxscore_map.get(team_id, "")
 
-        # Direction: team field = team that COMMITTED the penalty
-        # away committed → away short (4) → home PP → 4v5 PP
-        # home committed → home short (4) → away PP → 5v4 PP
-        if pen_team_abbr == away_abbr.upper():
-            sit_label = "4v5 PP"
+        if committed_side == "home":
+            sit_label = "5v4 PP"   # home committed → home short → away advantage
             pen_side  = "away"
-        elif pen_team_abbr == home_abbr.upper():
-            sit_label = "5v4 PP"
+        elif committed_side == "away":
+            sit_label = "4v5 PP"   # away committed → away short → home advantage
             pen_side  = "home"
         else:
-            sit_label = "PP"
-            pen_side  = ""
+            # Fallback: team.abbreviation (absent on 35/35 tested plays — rarely fires)
+            pen_team_abbr = team_obj.get("abbreviation", "").upper()
+            if pen_team_abbr == away_abbr.upper():
+                sit_label = "4v5 PP"; pen_side = "away"
+            elif pen_team_abbr == home_abbr.upper():
+                sit_label = "5v4 PP"; pen_side = "home"
+            else:
+                sit_label = "PP"; pen_side = ""
 
         penalties.append({
             "elapsed":      elapsed,
@@ -507,6 +535,8 @@ def parse_espn_penalties(espn_plays, away_abbr, home_abbr):
             "is_dm":        is_dm,
             "is_major":     is_major,
             "pen_side":     pen_side,
+            "team_id":      team_id,           # for coincidental detection
+            "committed_side": committed_side,  # for 5v3 detection
         })
     return penalties
 
@@ -562,7 +592,7 @@ def build_espn_pp_windows(espn_penalties, espn_plays):
 # =========================
 # SITUATION WINDOW BUILDER
 # =========================
-def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr=""):
+def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="", boxscore_map=None):
     """
     Build gapless situation windows using a hybrid approach.
 
@@ -586,7 +616,8 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
     if not nhl_plays:
         # No NHL data at all — fall back to pure ESPN
         if espn_plays:
-            esp_pens = parse_espn_penalties(espn_plays, away_abbr, home_abbr)
+            esp_pens = parse_espn_penalties(espn_plays, away_abbr, home_abbr,
+                                             boxscore_map=boxscore_map or {})
             return build_espn_pp_windows(esp_pens, espn_plays)
         return []
 
@@ -762,6 +793,13 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
         cap = pen_et + pen_dur + 10
         return min(win_end, cap)
 
+    # ── Phase 4: Simplified validation — duration only ──────────────────────
+    # Previously validated against pp_nhl_pens (penalty lookup).
+    # That caused real PP windows to be stripped when the NHL API did not log
+    # the penalty play (confirmed: Aho PPG, coincidentals at 301-314s).
+    # Option B: ESPN team.id provides direction. Sit codes provide boundaries.
+    # Trust windows built from sit codes; only strip genuine noise (< 5s).
+    # Tail-cap still applies to prevent Phase 3 merge overrun.
     validated = []
     for w in merged:
         w_start, w_end, w_sit = w
@@ -769,17 +807,10 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
         is_pp = "PP" in w_sit
         if is_pp:
             if dur < MIN_PP_DURATION:
-                # PP window too short to be real — replace with 5v5.
-                # "5v5" not the bare skater count: if no real PP, ice was even
-                # strength. Bare "4v5" is misleading and passes the PP filter.
-                validated.append([w_start, w_end, "5v5"])
-                continue
-            if not has_valid_penalty(w_start):
-                # No matching penalty found — same reasoning: default to 5v5.
+                # Sub-5s: genuine noise (cap remnant) → replace with 5v5
                 validated.append([w_start, w_end, "5v5"])
                 continue
             # Tail-cap: limit window end to penalty_start + duration + buffer
-            # to prevent Phase 3 merge contamination extending past expiry
             capped_end = cap_pp_end(w_start, w_end)
             if capped_end > w_start:
                 validated.append([w_start, capped_end, w_sit])
@@ -862,8 +893,9 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
 
     # ── Build PP windows from ESPN penalty text ────────────────────────────
     espn_wins = []
-    if espn_plays and (away_abbr or home_abbr):
-        esp_pens = parse_espn_penalties(espn_plays, away_abbr, home_abbr)
+    if espn_plays and (away_abbr or home_abbr or boxscore_map):
+        esp_pens = parse_espn_penalties(espn_plays, away_abbr, home_abbr,
+                                        boxscore_map=boxscore_map or {})
         espn_wins = build_espn_pp_windows(esp_pens, espn_plays)
 
     # ── Merge authoritative windows from both sources ──────────────────────
@@ -962,6 +994,41 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
             if " PP" in derived:
                 final_nhl[i] = (ws, we, derived)
 
+    # ── Synthetic 4v4 card insertion ──────────────────────────────────────
+    # When sit codes show 4v4 but no ESPN penalty play explains it
+    # (confirmed: both APIs missed coincidentals at 301-314s in Game 4),
+    # store a synthetic card so the user sees why strength changed.
+    if espn_plays:
+        espn_pen_times = set()
+        for _p in espn_plays:
+            _tid = (_p.get("type") or {}).get("id", "")
+            if is_espn_penalty(_tid):
+                _po  = _p.get("period", {})
+                _pn  = _po.get("number", 1) if isinstance(_po, dict) else 1
+                _co  = _p.get("clock", {})
+                _cv  = _co.get("displayValue", "0:00") if isinstance(_co, dict) else "0:00"
+                espn_pen_times.add(espn_clock_to_seconds(_cv, _pn))
+
+        synth_4v4 = []
+        for ws, we, wsit in final_nhl:
+            if wsit != "4v4":
+                continue
+            has_espn = any(abs(et - ws) <= 30 for et in espn_pen_times)
+            if not has_espn:
+                _period = max(1, ws // 1200 + 1)
+                synth_4v4.append({
+                    "elapsed":      ws,
+                    "type_text":    "Coincidental penalties",
+                    "situation":    "4v4",
+                    "is_pp_cause":  False,
+                    "is_synthetic": True,
+                    "text":         "Coincidental penalties — both teams short",
+                    "emoji":        "⚖️",
+                    "period_label": f"P{_period}",
+                    "sort_key":     ws,
+                })
+        nhl_data["_synthetic_4v4"] = synth_4v4
+
     return final_nhl
 
 def find_nhl_situation(espn_play, windows):
@@ -1046,7 +1113,16 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     try:
         resp = requests.get(ESPN_SUMMARY, params={"event": event_id}, timeout=15)
         resp.raise_for_status()
-        raw_plays = resp.json().get("plays", [])
+        espn_json = resp.json()
+        raw_plays = espn_json.get("plays", [])
+        # ── Build boxscore_map: ESPN team.id → homeAway (confirmed from debugger) ──
+        # team.id is present on all penalty plays even when team.abbreviation is absent.
+        # Used by parse_espn_penalties for primary direction resolution.
+        boxscore_map = {
+            str(t["team"]["id"]): t["homeAway"]
+            for t in (espn_json.get("boxscore") or {}).get("teams", [])
+            if isinstance(t.get("team"), dict) and "homeAway" in t
+        }
     except Exception as e:
         st.error(f"ESPN error: {e}")
         return []
@@ -1056,7 +1132,8 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     bucket = st.session_state.get("force_bucket") or int(time.time() // 30)
     nhl_data = fetch_nhl_plays(nhl_game_id, cache_bucket=bucket) if nhl_game_id else {"plays": [], "penalties": [], "teams": {}}
     windows  = build_situation_windows(nhl_data, espn_plays=raw_plays,
-                                        away_abbr=away_abbr, home_abbr=home_abbr)
+                                        away_abbr=away_abbr, home_abbr=home_abbr,
+                                        boxscore_map=boxscore_map)
 
     # last_refresh only updates after a real fetch completes
     st.session_state.last_refresh = datetime.now(ET)
@@ -1170,10 +1247,47 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
 
     claimed_nhl = set()  # elapsed values of NHL penalties already claimed
 
+    # Inject synthetic 4v4 cards into the play stream
+    # These explain strength transitions where both APIs missed the penalty plays
+    for synth in (nhl_data.get("_synthetic_4v4") or []):
+        plays.append({
+            "seq":          -1,
+            "period_num":   synth.get("sort_key", 0) // 1200 + 1,
+            "period_type":  "REG",
+            "period_label": synth.get("period_label", "P1"),
+            "clock":        "",
+            "elapsed":      synth["elapsed"],
+            "type_text":    synth["type_text"],
+            "type_id":      "",
+            "pen_team":     "",
+            "text":         synth["text"],
+            "situation":    synth["situation"],
+            "wall_raw":     "",
+            "wall_et":      "",
+            "wall_dt":      None,
+            "away_score":   "",
+            "home_score":   "",
+            "emoji":        synth["emoji"],
+            "is_pp_cause":  False,
+            "pp_arrow":     "",
+            "is_synthetic": True,
+            "is_coincidental": False,
+        })
+
+    # Sort plays by elapsed so synthetic cards appear in correct position
+    plays.sort(key=lambda p: (p.get("elapsed", 0), p.get("seq", 0)))
+
     for play in plays:
-        if not is_espn_penalty(play["type_id"]):
+        if not is_espn_penalty(play["type_id"]) and not play.get("is_synthetic"):
             continue
+        if play.get("is_synthetic"):
+            continue  # already fully formed — no further tagging needed
         if play.get("is_coincidental"):
+            # Coincidental: show in stream as a card but NOT as PP cause
+            play["type_text"]  = "Coincidental penalty"
+            play["situation"]  = "4v4"
+            play["is_pp_cause"] = False
+            play["pp_arrow"]    = ""
             continue
 
         pel            = play["elapsed"]
