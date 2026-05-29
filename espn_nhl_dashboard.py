@@ -994,41 +994,6 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
             if " PP" in derived:
                 final_nhl[i] = (ws, we, derived)
 
-    # ── Synthetic 4v4 card insertion ──────────────────────────────────────
-    # When sit codes show 4v4 but no ESPN penalty play explains it
-    # (confirmed: both APIs missed coincidentals at 301-314s in Game 4),
-    # store a synthetic card so the user sees why strength changed.
-    if espn_plays:
-        espn_pen_times = set()
-        for _p in espn_plays:
-            _tid = (_p.get("type") or {}).get("id", "")
-            if is_espn_penalty(_tid):
-                _po  = _p.get("period", {})
-                _pn  = _po.get("number", 1) if isinstance(_po, dict) else 1
-                _co  = _p.get("clock", {})
-                _cv  = _co.get("displayValue", "0:00") if isinstance(_co, dict) else "0:00"
-                espn_pen_times.add(espn_clock_to_seconds(_cv, _pn))
-
-        synth_4v4 = []
-        for ws, we, wsit in final_nhl:
-            if wsit != "4v4":
-                continue
-            has_espn = any(abs(et - ws) <= 30 for et in espn_pen_times)
-            if not has_espn:
-                _period = max(1, ws // 1200 + 1)
-                synth_4v4.append({
-                    "elapsed":      ws,
-                    "type_text":    "Coincidental penalties",
-                    "situation":    "4v4",
-                    "is_pp_cause":  False,
-                    "is_synthetic": True,
-                    "text":         "Coincidental penalties — both teams short",
-                    "emoji":        "⚖️",
-                    "period_label": f"P{_period}",
-                    "sort_key":     ws,
-                })
-        nhl_data["_synthetic_4v4"] = synth_4v4
-
     return final_nhl
 
 def find_nhl_situation(espn_play, windows):
@@ -1247,41 +1212,9 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
 
     claimed_nhl = set()  # elapsed values of NHL penalties already claimed
 
-    # Inject synthetic 4v4 cards into the play stream
-    # These explain strength transitions where both APIs missed the penalty plays
-    for synth in (nhl_data.get("_synthetic_4v4") or []):
-        plays.append({
-            "seq":          -1,
-            "period_num":   synth.get("sort_key", 0) // 1200 + 1,
-            "period_type":  "REG",
-            "period_label": synth.get("period_label", "P1"),
-            "clock":        "",
-            "elapsed":      synth["elapsed"],
-            "type_text":    synth["type_text"],
-            "type_id":      "",
-            "pen_team":     "",
-            "text":         synth["text"],
-            "situation":    synth["situation"],
-            "wall_raw":     "",
-            "wall_et":      "",
-            "wall_dt":      None,
-            "away_score":   "",
-            "home_score":   "",
-            "emoji":        synth["emoji"],
-            "is_pp_cause":  False,
-            "pp_arrow":     "",
-            "is_synthetic": True,
-            "is_coincidental": False,
-        })
-
-    # Sort plays by elapsed so synthetic cards appear in correct position
-    plays.sort(key=lambda p: (p.get("elapsed", 0), p.get("seq", 0)))
-
     for play in plays:
-        if not is_espn_penalty(play["type_id"]) and not play.get("is_synthetic"):
+        if not is_espn_penalty(play["type_id"]):
             continue
-        if play.get("is_synthetic"):
-            continue  # already fully formed — no further tagging needed
         if play.get("is_coincidental"):
             # Coincidental: show in stream as a card but NOT as PP cause
             play["type_text"]  = "Coincidental penalty"
@@ -1572,12 +1505,8 @@ if st.session_state.view == "game":
             st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
             st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
             st.markdown(f"🎯 **Event:** {p.get('type_text')}")
-            if sit:
-                # Generic "PP" (no direction) means ESPN team field was absent.
-                # Display as blank rather than the misleading "PP" label.
-                sit_display = "" if sit == "PP" else sit
-                if sit_display:
-                    st.markdown(f"⚖️ **Strength:** `{sit_display}`")
+            if " PP" in sit:
+                st.markdown(f"⚖️ **Strength:** `{sit}`")
             st.markdown(f"📋 **Play:** {p.get('text')}")
             if p.get("wall_et") and p.get("wall_et") != "N/A":
                 st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
