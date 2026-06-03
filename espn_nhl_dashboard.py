@@ -793,12 +793,15 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
         cap = pen_et + pen_dur + 10
         return min(win_end, cap)
 
-    # ── Phase 4: Simplified validation — duration only ──────────────────────
+    # ── Phase 4: Simplified validation — duration + real-penalty check ────────
     # Previously validated against pp_nhl_pens (penalty lookup).
     # That caused real PP windows to be stripped when the NHL API did not log
     # the penalty play (confirmed: Aho PPG, coincidentals at 301-314s).
     # Option B: ESPN team.id provides direction. Sit codes provide boundaries.
-    # Trust windows built from sit codes; only strip genuine noise (< 5s).
+    # Sub-5s windows are stripped as noise UNLESS a real penalty is within 30s
+    # of window start — confirmed from 74-game data: 12 windows were stripped
+    # incorrectly (NHL API timing artifacts, 0-3s duration, real penalty nearby).
+    # 3 genuine noise windows have no nearby penalty → still stripped correctly.
     # Tail-cap still applies to prevent Phase 3 merge overrun.
     validated = []
     for w in merged:
@@ -807,9 +810,18 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
         is_pp = "PP" in w_sit
         if is_pp:
             if dur < MIN_PP_DURATION:
-                # Sub-5s: genuine noise (cap remnant) → replace with 5v5
-                validated.append([w_start, w_end, "5v5"])
-                continue
+                # Sub-5s: strip as noise UNLESS a real penalty is within 30s.
+                # A nearby penalty confirms the PP was real (NHL API timing
+                # artifact created the tiny window). No nearby penalty = genuine
+                # noise such as a cap remnant → replace with 5v5.
+                has_real_penalty = any(
+                    abs(et - w_start) <= 30
+                    for et in valid_penalty_times
+                )
+                if not has_real_penalty:
+                    validated.append([w_start, w_end, "5v5"])
+                    continue
+                # Real PP — fall through to tail-cap below
             # Tail-cap: limit window end to penalty_start + duration + buffer
             capped_end = cap_pp_end(w_start, w_end)
             if capped_end > w_start:
@@ -994,15 +1006,45 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
             if " PP" in derived:
                 final_nhl[i] = (ws, we, derived)
 
+    # ── Delayed penalty detection ─────────────────────────────────────────
+    # Confirmed from 74 games: 332 PP windows where the sit code shows PP
+    # before the penalty play arrives (delayed call). Average 76s visible
+    # without explanation. Max 270s across the dataset.
+    # Detection: no penalty within 15s of window START → delayed call.
+    # Split point stored: first penalty inside the window = when whistle blew.
+    # Display layer uses this to suppress PP badge and show delayed card instead.
+    delayed_splits = {}   # ws → first_pen_elapsed inside window
+    for ws, we, wsit in final_nhl:
+        if " PP" not in wsit:
+            continue
+        dur = we - ws if we < 99999 else 9999
+        if dur < MIN_PP_DURATION:
+            continue
+        near_start = any(abs(et - ws) <= 15 for et in valid_penalty_times)
+        if near_start:
+            continue   # normal PP — penalty at or near faceoff
+        inside = sorted(et for et in valid_penalty_times if ws < et <= we)
+        if inside:
+            delayed_splits[ws] = inside[0]   # split at first penalty inside
+    nhl_data["_delayed_splits"] = delayed_splits
+
     return final_nhl
 
-def find_nhl_situation(espn_play, windows):
-    """Find on-ice situation for an ESPN play from situation windows."""
+def find_nhl_situation(espn_play, windows, delayed_splits=None):
+    """Find on-ice situation for an ESPN play from situation windows.
+    If delayed_splits is provided and the play falls in the pre-stoppage
+    phase of a delayed penalty, returns 'Delayed penalty' so the display
+    layer suppresses the PP strength badge for that phase.
+    """
     if not windows:
         return ""
     elapsed = espn_play.get("elapsed", 0)
+    delayed_splits = delayed_splits or {}
     for (ws, we, wsit) in windows:
         if ws <= elapsed < we:
+            # Check if we are in the delayed phase (before whistle blew)
+            if ws in delayed_splits and elapsed < delayed_splits[ws]:
+                return "Delayed penalty"   # no " PP" → no strength badge shown
             return wsit
     if windows and windows[-1][0] <= elapsed < windows[-1][1]:
         return windows[-1][2]
@@ -1121,7 +1163,8 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         team_obj   = p.get("team", {})
         pen_team   = team_obj.get("abbreviation", "").upper() if isinstance(team_obj, dict) else ""
 
-        situation = find_nhl_situation({"elapsed": elapsed}, windows)
+        situation = find_nhl_situation({"elapsed": elapsed}, windows,
+                                           delayed_splits=nhl_data.get("_delayed_splits"))
 
         plays.append({
             "seq":          seq,
@@ -1211,6 +1254,38 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
                 plays[j]["is_coincidental"] = True
 
     claimed_nhl = set()  # elapsed values of NHL penalties already claimed
+
+    # ── Inject delayed penalty cards ─────────────────────────────────────
+    # A delayed penalty card appears at the window start to explain to the
+    # user why the strength is about to change before the penalty is called.
+    # The real penalty card still appears when play stops (normal flow).
+    for ws, first_pen_el in (nhl_data.get("_delayed_splits") or {}).items():
+        period_num = ws // 1200 + 1
+        plays.append({
+            "seq":          -1,
+            "period_num":   period_num,
+            "period_type":  "REG",
+            "period_label": f"P{period_num}",
+            "clock":        "",
+            "elapsed":      ws,
+            "type_text":    "Delayed penalty",
+            "type_id":      "",
+            "pen_team":     "",
+            "text":         "Referee arm raised — delayed penalty in progress",
+            "situation":    "Delayed penalty",
+            "wall_raw":     "",
+            "wall_et":      "",
+            "wall_dt":      None,
+            "away_score":   "",
+            "home_score":   "",
+            "emoji":        "🖐️",
+            "is_pp_cause":  False,
+            "pp_arrow":     "",
+            "is_coincidental": False,
+        })
+
+    # Re-sort so delayed cards appear at the correct position in the feed
+    plays.sort(key=lambda p: (p.get("elapsed", 0), p.get("seq", 0)))
 
     for play in plays:
         if not is_espn_penalty(play["type_id"]):
