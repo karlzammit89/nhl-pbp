@@ -1052,7 +1052,10 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
         ]
         if active_before:
             closest = max(active_before, key=lambda p: p["elapsed"])
-            delayed_splits[ws]   = ws                  # whole window explained
+            # Carry-over windows are NOT added to delayed_splits.
+            # delayed_splits is only for true delayed calls (penalty inside window).
+            # Adding carry-overs to delayed_splits would trigger the delayed card
+            # injection AND the carry-over injection → two cards for one window.
             carryover_source[ws] = closest["elapsed"]  # source for card
     nhl_data["_delayed_splits"]   = delayed_splits
     nhl_data["_carryover_source"] = carryover_source
@@ -1294,7 +1297,12 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         # ESPN plays carry real API values: clock.displayValue (game clock,
         # stops during stoppages), awayScore, homeScore, wallclock.
         # No formula. No sort-order dependency. Same source as every other card.
-        _near    = min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None
+        # Find nearest play at or after ws — avoids picking the previous period's
+        # Period End play which sits at the same elapsed as ws but belongs to the
+        # old period. Using elapsed >= ws guarantees the card sorts AFTER Period End.
+        _plays_fwd = [p for p in plays if p.get("elapsed", 0) > ws]
+        _near      = min(_plays_fwd, key=lambda p: p.get("elapsed", 0)) if _plays_fwd \
+                     else (min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None)
         _clk     = _near.get("clock",      "") if _near else ""
         _away_sc = _near.get("away_score", "") if _near else ""
         _home_sc = _near.get("home_score", "") if _near else ""
@@ -1331,7 +1339,12 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     # before ws is still actively serving (pen_elapsed + duration > ws).
     # Green border, 🔄 emoji, "Carry-over" badge.
     for ws, pen_el in (nhl_data.get("_carryover_source") or {}).items():
-        _near    = min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None
+        # Find nearest play at or after ws — avoids picking the previous period's
+        # Period End play which sits at the same elapsed as ws but belongs to the
+        # old period. Using elapsed >= ws guarantees the card sorts AFTER Period End.
+        _plays_fwd = [p for p in plays if p.get("elapsed", 0) > ws]
+        _near      = min(_plays_fwd, key=lambda p: p.get("elapsed", 0)) if _plays_fwd \
+                     else (min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None)
         _clk     = _near.get("clock",      "") if _near else ""
         _away_sc = _near.get("away_score", "") if _near else ""
         _home_sc = _near.get("home_score", "") if _near else ""
@@ -1434,7 +1447,12 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         if any(abs(et - ws) <= 90 for et in _tagged_cause_els):
             continue   # PP Cause card is within 90s
         # No explanation — inject placeholder card
-        _near    = min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None
+        # Find nearest play at or after ws — avoids picking the previous period's
+        # Period End play which sits at the same elapsed as ws but belongs to the
+        # old period. Using elapsed >= ws guarantees the card sorts AFTER Period End.
+        _plays_fwd = [p for p in plays if p.get("elapsed", 0) > ws]
+        _near      = min(_plays_fwd, key=lambda p: p.get("elapsed", 0)) if _plays_fwd \
+                     else (min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None)
         _clk     = _near.get("clock",      "") if _near else ""
         _away_sc = _near.get("away_score", "") if _near else ""
         _home_sc = _near.get("home_score", "") if _near else ""
