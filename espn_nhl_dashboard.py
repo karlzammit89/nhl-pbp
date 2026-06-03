@@ -1044,7 +1044,7 @@ def find_nhl_situation(espn_play, windows, delayed_splits=None):
         if ws <= elapsed < we:
             # Check if we are in the delayed phase (before whistle blew)
             if ws in delayed_splits and elapsed < delayed_splits[ws]:
-                return "Delayed penalty"   # no " PP" → no strength badge shown
+                return "Delayed Penalty"   # no " PP" → no strength badge shown
             return wsit
     if windows and windows[-1][0] <= elapsed < windows[-1][1]:
         return windows[-1][2]
@@ -1272,17 +1272,17 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         _wall_et  = _near.get("wall_et",   "") if _near else ""
         _wall_raw = _near.get("wall_raw",  "") if _near else ""
         plays.append({
-            "seq":          -1,
+            "seq":          -2,
             "period_num":   period_num,
             "period_type":  "REG",
             "period_label": f"P{period_num}",
             "clock":        _clk,
-            "elapsed":      ws,
-            "type_text":    "Delayed penalty",
+            "elapsed":      _near.get("elapsed", ws) if _near else ws,
+            "type_text":    "Delayed Penalty",
             "type_id":      "",
             "pen_team":     "",
-            "text":         "Referee arm raised — delayed penalty in progress",
-            "situation":    "Delayed penalty",
+            "text":         "Referee arm raised — Delayed Penalty in progress",
+            "situation":    "Delayed Penalty",
             "wall_raw":     _wall_raw,
             "wall_et":      _wall_et,
             "wall_dt":      None,
@@ -1592,14 +1592,14 @@ if st.session_state.view == "game":
             wall_et = p.get("wall_et", "")
             time_row = (
                 f'<p style="margin:12px 0 0 0;font-size:1rem">🕐 <b>Time (ET):</b>'
-                f' <code>~{wall_et}</code></p>'
+                f' <code>approx {wall_et}</code></p>'
                 if wall_et and wall_et != "N/A" else ""
             )
             st.markdown(f"""
 <div style="border-left:3px solid #185FA5;padding-left:12px;margin:20px 0 0 0;border-radius:0">
   <div style="display:flex;align-items:center;gap:10px;margin:0 0 12px 0">
     <span style="font-size:1.5rem;font-weight:600;line-height:1.3">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</span>
-    <span style="background:#E6F1FB;color:#185FA5;font-size:12px;font-weight:500;padding:2px 8px;border-radius:4px;white-space:nowrap">Delayed penalty</span>
+    <span style="background:#E6F1FB;color:#185FA5;font-size:12px;font-weight:500;padding:2px 8px;border-radius:4px;white-space:nowrap">Delayed Penalty</span>
   </div>
   <p style="margin:12px 0 0 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
   <p style="margin:12px 0 0 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
