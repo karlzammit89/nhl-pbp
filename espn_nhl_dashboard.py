@@ -812,17 +812,22 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
     # incorrectly (NHL API timing artifacts, 0-3s duration, real penalty nearby).
     # 3 genuine noise windows have no nearby penalty → still stripped correctly.
     # Tail-cap still applies to prevent Phase 3 merge overrun.
+    # ── Direction mismatch artefact threshold (Rule B) ──────────────────────
+    # Confirmed from 160-game analysis (2025+2026 playoffs, 994 PP windows):
+    # Zero PP goals occur in any direction-mismatch window ≤ 30s.
+    # These windows are NHL sit code transition artefacts during simultaneous
+    # or staggered penalty calls — the sit code briefly shows the wrong team
+    # short before correcting. Safe to strip unconditionally.
+    MISMATCH_ARTEFACT_MAX = 30
+
     validated = []
     for w in merged:
         w_start, w_end, w_sit = w
         dur   = w_end - w_start if w_end < 99999 else 9999
         is_pp = "PP" in w_sit
         if is_pp:
+            # ── Rule A (existing): sub-5s with no nearby penalty ────────────
             if dur < MIN_PP_DURATION:
-                # Sub-5s: strip as noise UNLESS a real penalty is within 30s.
-                # A nearby penalty confirms the PP was real (NHL API timing
-                # artifact created the tiny window). No nearby penalty = genuine
-                # noise such as a cap remnant → replace with 5v5.
                 has_real_penalty = any(
                     abs(et - w_start) <= 30
                     for et in valid_penalty_times
@@ -831,6 +836,36 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
                     validated.append([w_start, w_end, "5v5"])
                     continue
                 # Real PP — fall through to tail-cap below
+
+            # ── Rule B (new): sub-30s direction mismatch = artefact ─────────
+            # Only fires when:
+            #   1. Window is under 30s
+            #   2. At least one nearby penalty with known pen_side EXISTS
+            #   3. NONE of those penalties match the window direction
+            # Does NOT fire when no nearby penalty (delayed call) or when
+            # any penalty correctly confirms the direction.
+            if dur < MISMATCH_ARTEFACT_MAX:
+                sit_dir = ("5v4" if w_sit.startswith("5v4") else
+                           "4v5" if w_sit.startswith("4v5") else "")
+                if sit_dir:
+                    # expected pen_side: home drew → 4v5 PP; away drew → 5v4 PP
+                    expected_side = "away" if sit_dir == "5v4" else "home"
+                    nearby_known  = [
+                        p for p in nhl_penalties
+                        if not p.get("is_no_pp", True)
+                        and abs(p["elapsed"] - w_start) <= 30
+                        and p.get("pen_side", "?") != "?"
+                    ]
+                    if nearby_known:
+                        any_correct = any(
+                            p["pen_side"] == expected_side
+                            for p in nearby_known
+                        )
+                        if not any_correct:
+                            # Direction mismatch confirmed — strip artefact
+                            validated.append([w_start, w_end, "5v5"])
+                            continue
+
             # Tail-cap: limit window end to penalty_start + duration + buffer
             capped_end = cap_pp_end(w_start, w_end)
             if capped_end > w_start:
