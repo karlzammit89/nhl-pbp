@@ -1261,26 +1261,44 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     # The real penalty card still appears when play stops (normal flow).
     for ws, first_pen_el in (nhl_data.get("_delayed_splits") or {}).items():
         period_num = ws // 1200 + 1
+        # Clock — exact, remaining time in period (matches ESPN clock.displayValue)
+        # ESPN plays show remaining time (20:00 → 0:00), so ws → remaining.
+        _ep  = ws % 1200          # elapsed seconds from period start
+        _rem = 1200 - _ep         # remaining seconds in period
+        _clk = f"{_rem // 60}:{_rem % 60:02d}"
+        # Score — exact, last ESPN play with elapsed <= ws
+        _score_play = next(
+            (p for p in reversed(plays) if p.get("elapsed", 0) <= ws
+             and p.get("away_score", "") not in ("", None)),
+            None
+        )
+        _away_sc = _score_play.get("away_score", "") if _score_play else ""
+        _home_sc = _score_play.get("home_score", "") if _score_play else ""
+        # Timestamp — approximate, nearest ESPN play to ws (~5-15s)
+        _near = min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None
+        _wall_et  = _near.get("wall_et",  "") if _near else ""
+        _wall_raw = _near.get("wall_raw", "") if _near else ""
         plays.append({
             "seq":          -1,
             "period_num":   period_num,
             "period_type":  "REG",
             "period_label": f"P{period_num}",
-            "clock":        "",
+            "clock":        _clk,
             "elapsed":      ws,
             "type_text":    "Delayed penalty",
             "type_id":      "",
             "pen_team":     "",
             "text":         "Referee arm raised — delayed penalty in progress",
             "situation":    "Delayed penalty",
-            "wall_raw":     "",
-            "wall_et":      "",
+            "wall_raw":     _wall_raw,
+            "wall_et":      _wall_et,
             "wall_dt":      None,
-            "away_score":   "",
-            "home_score":   "",
+            "away_score":   _away_sc,
+            "home_score":   _home_sc,
             "emoji":        "🖐️",
             "is_pp_cause":  False,
             "pp_arrow":     "",
+            "is_delayed":   True,
             "is_coincidental": False,
         })
 
@@ -1571,6 +1589,27 @@ if st.session_state.view == "game":
   <p style="margin:12px 0 0 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
   <p style="margin:12px 0 0 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
   {strength_row}
+  <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
+  {time_row}
+</div>
+""", unsafe_allow_html=True)
+        elif p.get("is_delayed"):
+            # Delayed penalty card — blue border + badge
+            # Timestamp is approximate (nearest ESPN play); shown with ~ prefix.
+            wall_et = p.get("wall_et", "")
+            time_row = (
+                f'<p style="margin:12px 0 0 0;font-size:1rem">🕐 <b>Time (ET):</b>'
+                f' <code>~{wall_et}</code></p>'
+                if wall_et and wall_et != "N/A" else ""
+            )
+            st.markdown(f"""
+<div style="border-left:3px solid #185FA5;padding-left:12px;margin:20px 0 0 0;border-radius:0">
+  <div style="display:flex;align-items:center;gap:10px;margin:0 0 12px 0">
+    <span style="font-size:1.5rem;font-weight:600;line-height:1.3">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</span>
+    <span style="background:#E6F1FB;color:#185FA5;font-size:12px;font-weight:500;padding:2px 8px;border-radius:4px;white-space:nowrap">Delayed penalty</span>
+  </div>
+  <p style="margin:12px 0 0 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
   <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
   {time_row}
 </div>
