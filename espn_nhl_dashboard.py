@@ -518,14 +518,23 @@ def parse_espn_penalties(espn_plays, away_abbr, home_abbr, boxscore_map=None):
             sit_label = "4v5 PP"   # away committed → away short → home advantage
             pen_side  = "home"
         else:
-            # Fallback: team.abbreviation (absent on 35/35 tested plays — rarely fires)
+            # Fallback 1: team.abbreviation text match
             pen_team_abbr = team_obj.get("abbreviation", "").upper()
             if pen_team_abbr == away_abbr.upper():
                 sit_label = "4v5 PP"; pen_side = "away"
             elif pen_team_abbr == home_abbr.upper():
                 sit_label = "5v4 PP"; pen_side = "home"
             else:
-                sit_label = "PP"; pen_side = ""
+                # Fallback 2: team.id → boxscore_map
+                # Covers series where ESPN omits abbreviation but team.id present
+                # (confirmed: CAR/OTT/MTL/PHI/PIT/BUF series in 2026 playoffs)
+                ha = boxscore_map.get(team_id, "")
+                if ha == "home":
+                    sit_label = "5v4 PP"; pen_side = "home"
+                elif ha == "away":
+                    sit_label = "4v5 PP"; pen_side = "away"
+                else:
+                    sit_label = "PP"; pen_side = ""
 
         penalties.append({
             "elapsed":      elapsed,
@@ -1006,14 +1015,20 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
             if " PP" in derived:
                 final_nhl[i] = (ws, we, derived)
 
-    # ── Delayed penalty detection ─────────────────────────────────────────
-    # Confirmed from 74 games: 332 PP windows where the sit code shows PP
-    # before the penalty play arrives (delayed call). Average 76s visible
-    # without explanation. Max 270s across the dataset.
-    # Detection: no penalty within 15s of window START → delayed call.
-    # Split point stored: first penalty inside the window = when whistle blew.
-    # Display layer uses this to suppress PP badge and show delayed card instead.
-    delayed_splits = {}   # ws → first_pen_elapsed inside window
+    # ── Delayed penalty + carry-over detection ──────────────────────────────
+    # Confirmed from 160 games (2025+2026): 721 delayed PP windows,
+    # 26 carry-over windows.
+    #
+    # DELAYED: sit code shows PP before penalty play arrives (delayed call).
+    # No penalty within 15s of ws → delayed call.
+    # Split at first penalty inside window = when whistle blew.
+    #
+    # CARRY-OVER: penalty called before ws is still actively serving at ws.
+    # pen_elapsed < ws AND pen_elapsed + duration_sec > ws.
+    # Uses actual duration_sec (not default 120s) so majors (300s) and
+    # double-minors (240s) are handled correctly.
+    delayed_splits   = {}   # ws → first_pen_elapsed (delayed) or ws (carry-over)
+    carryover_source = {}   # ws → pen_elapsed that is carrying over
     for ws, we, wsit in final_nhl:
         if " PP" not in wsit:
             continue
@@ -1023,10 +1038,24 @@ def build_situation_windows(nhl_data, espn_plays=None, away_abbr="", home_abbr="
         near_start = any(abs(et - ws) <= 15 for et in valid_penalty_times)
         if near_start:
             continue   # normal PP — penalty at or near faceoff
+        # Delayed: penalty inside the window (after ws)
         inside = sorted(et for et in valid_penalty_times if ws < et <= we)
         if inside:
             delayed_splits[ws] = inside[0]   # split at first penalty inside
-    nhl_data["_delayed_splits"] = delayed_splits
+            continue
+        # Carry-over: penalty before ws still actively serving at ws
+        active_before = [
+            pen for pen in nhl_penalties
+            if not pen.get("is_no_pp", True)
+            and pen["elapsed"] < ws
+            and pen["elapsed"] + pen.get("duration_sec", 120) > ws
+        ]
+        if active_before:
+            closest = max(active_before, key=lambda p: p["elapsed"])
+            delayed_splits[ws]   = ws                  # whole window explained
+            carryover_source[ws] = closest["elapsed"]  # source for card
+    nhl_data["_delayed_splits"]   = delayed_splits
+    nhl_data["_carryover_source"] = carryover_source
 
     return final_nhl
 
@@ -1292,10 +1321,52 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "is_pp_cause":  False,
             "pp_arrow":     "",
             "is_delayed":   True,
+            "is_carryover": False,
+            "is_unknown_pp": False,
             "is_coincidental": False,
         })
 
-    # Re-sort so delayed cards appear at the correct position in the feed
+    # ── Inject carry-over cards ───────────────────────────────────────────
+    # A carry-over card appears at period/phase start when a penalty called
+    # before ws is still actively serving (pen_elapsed + duration > ws).
+    # Green border, 🔄 emoji, "Carry-over" badge.
+    for ws, pen_el in (nhl_data.get("_carryover_source") or {}).items():
+        _near    = min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None
+        _clk     = _near.get("clock",      "") if _near else ""
+        _away_sc = _near.get("away_score", "") if _near else ""
+        _home_sc = _near.get("home_score", "") if _near else ""
+        _wall_et  = _near.get("wall_et",   "") if _near else ""
+        _wall_raw = _near.get("wall_raw",  "") if _near else ""
+        period_num = ws // 1200 + 1
+        # Resolve PP strength label from windows list
+        _wsit = next((lbl for s, e, lbl in pp_windows if s == ws), "PP")
+        plays.append({
+            "seq":          -2,
+            "period_num":   period_num,
+            "period_type":  "REG",
+            "period_label": f"P{period_num}",
+            "clock":        _clk,
+            "elapsed":      _near.get("elapsed", ws) if _near else ws,
+            "type_text":    "Carry-over penalty",
+            "type_id":      "",
+            "pen_team":     "",
+            "text":         "Power play continues from previous period penalty",
+            "situation":    _wsit,
+            "wall_raw":     _wall_raw,
+            "wall_et":      _wall_et,
+            "wall_dt":      None,
+            "away_score":   _away_sc,
+            "home_score":   _home_sc,
+            "emoji":        "🔄",
+            "is_pp_cause":  False,
+            "pp_arrow":     "",
+            "is_delayed":   False,
+            "is_carryover": True,
+            "is_unknown_pp": False,
+            "is_coincidental": False,
+        })
+
+    # Re-sort so injected cards appear at the correct position in the feed
     plays.sort(key=lambda p: (p.get("elapsed", 0), p.get("seq", 0)))
 
     for play in plays:
@@ -1333,12 +1404,67 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             play["is_pp_cause"] = True
             play["pp_arrow"]    = _pen_arrow(best_pen[1]["pen_side"])
         else:
-            # Stage 2: Condition A only — inside PP window
+            # Stage 2: inside window OR within 90s before window start.
+            # Pre-ws extension catches ESPN penalties where ESPN and NHL
+            # log the same event with diverging timestamps (confirmed gap
+            # 7-77s across 4 failures). Direction from wsit (sit code =
+            # ground truth). Only fires when Stage 1B already failed.
+            PRE_WS_THR = 90
             for ws, we, wsit in pp_windows:
-                if ws <= pel < we:
+                if ws <= pel < we:                        # inside window
                     play["is_pp_cause"] = True
                     play["pp_arrow"]    = f"5v5 → {wsit}"
                     break
+                elif pel < ws and (ws - pel) <= PRE_WS_THR:  # before ws ≤90s
+                    play["is_pp_cause"] = True
+                    play["pp_arrow"]    = f"5v5 → {wsit}"
+                    break
+
+    # ── Inject "Penalty data unavailable" cards for unexplained PP windows ──
+    # Fires when a PP window has no delayed card, no carry-over card, and no
+    # is_pp_cause=True play within 90s of ws. Both APIs confirmed to have no
+    # penalty record for these windows. Card is honest — no data invented.
+    # Grey border, 🔍 emoji, "Penalty data unavailable" badge.
+    _tagged_cause_els = {p.get("elapsed") for p in plays if p.get("is_pp_cause")}
+    _delayed_ws       = set((nhl_data.get("_delayed_splits")   or {}).keys())
+    _carryover_ws     = set((nhl_data.get("_carryover_source") or {}).keys())
+    for ws, we, wsit in pp_windows:
+        if ws in _delayed_ws or ws in _carryover_ws:
+            continue   # already has a card
+        if any(abs(et - ws) <= 90 for et in _tagged_cause_els):
+            continue   # PP Cause card is within 90s
+        # No explanation — inject placeholder card
+        _near    = min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None
+        _clk     = _near.get("clock",      "") if _near else ""
+        _away_sc = _near.get("away_score", "") if _near else ""
+        _home_sc = _near.get("home_score", "") if _near else ""
+        period_num = ws // 1200 + 1
+        plays.append({
+            "seq":           -1,
+            "period_num":    period_num,
+            "period_type":   "REG",
+            "period_label":  f"P{period_num}",
+            "clock":         _clk,
+            "elapsed":       ws,
+            "type_text":     "Penalty data unavailable",
+            "type_id":       "",
+            "pen_team":      "",
+            "text":          "Power play in progress — penalty details not logged by NHL or ESPN",
+            "situation":     wsit,
+            "wall_raw":      "",
+            "wall_et":       "",
+            "wall_dt":       None,
+            "away_score":    _away_sc,
+            "home_score":    _home_sc,
+            "emoji":         "🔍",
+            "is_pp_cause":   False,
+            "pp_arrow":      "",
+            "is_delayed":    False,
+            "is_carryover":  False,
+            "is_unknown_pp": True,
+            "is_coincidental": False,
+        })
+    plays.sort(key=lambda p: (p.get("elapsed", 0), p.get("seq", 0)))
 
     st.session_state.cached_plays    = plays
     st.session_state.cached_event_id = event_id
@@ -1495,7 +1621,7 @@ if st.session_state.view == "game":
                     if not p["wall_dt"] or START_DT is None or END_DT is None: return False
                     if not (START_DT <= p["wall_dt"] <= END_DT): return False
                 if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
-                if USE_PP_FILTER and " PP" not in sit and not p.get("is_pp_cause", False): return False
+                if USE_PP_FILTER and " PP" not in sit and not p.get("is_pp_cause", False) and not p.get("is_delayed", False) and not p.get("is_carryover", False) and not p.get("is_unknown_pp", False): return False
                 if USE_GP_FILTER and "EN" not in sit: return False
                 return True
             st.session_state.filtered_plays  = [p for p in plays if passes(p)]
@@ -1605,6 +1731,43 @@ if st.session_state.view == "game":
   <p style="margin:12px 0 0 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
   <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
   {time_row}
+</div>
+""", unsafe_allow_html=True)
+        elif p.get("is_carryover"):
+            # Carry-over penalty card — green border + badge
+            # Appears when a penalty from a previous period or earlier in the
+            # same period is still actively serving at the start of this window.
+            wall_et = p.get("wall_et", "")
+            time_row = (
+                f'<p style="margin:12px 0 0 0;font-size:1rem">🕐 <b>Time (ET):</b>'
+                f' <code>approx {wall_et}</code></p>'
+                if wall_et and wall_et != "N/A" else ""
+            )
+            st.markdown(f"""
+<div style="border-left:3px solid #1A7A4A;padding-left:12px;margin:20px 0 0 0;border-radius:0">
+  <div style="display:flex;align-items:center;gap:10px;margin:0 0 12px 0">
+    <span style="font-size:1.5rem;font-weight:600;line-height:1.3">🔄 {p.get('period_label')} | ⏱️ {p.get('clock')}</span>
+    <span style="background:#E6F4EC;color:#1A7A4A;font-size:12px;font-weight:500;padding:2px 8px;border-radius:4px;white-space:nowrap">Carry-over</span>
+  </div>
+  <p style="margin:12px 0 0 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">⚖️ <b>Strength:</b> <code>{p.get('situation')}</code></p>
+  <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
+  {time_row}
+</div>
+""", unsafe_allow_html=True)
+        elif p.get("is_unknown_pp"):
+            # Penalty data unavailable card — grey border + badge
+            # Appears when both NHL and ESPN APIs have no penalty record for
+            # this PP window. The PP is confirmed real (sit code) but the
+            # penalty play is missing from all available data sources.
+            st.markdown(f"""
+<div style="border-left:3px solid #888888;padding-left:12px;margin:20px 0 0 0;border-radius:0">
+  <div style="display:flex;align-items:center;gap:10px;margin:0 0 12px 0">
+    <span style="font-size:1.5rem;font-weight:600;line-height:1.3">🔍 {p.get('period_label')} | ⏱️ {p.get('clock')}</span>
+    <span style="background:#F0F0F0;color:#666666;font-size:12px;font-weight:500;padding:2px 8px;border-radius:4px;white-space:nowrap">Penalty data unavailable</span>
+  </div>
+  <p style="margin:12px 0 0 0;font-size:1rem">⚖️ <b>Strength:</b> <code>{p.get('situation')}</code></p>
+  <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Note:</b> {p.get('text')}</p>
 </div>
 """, unsafe_allow_html=True)
         else:
