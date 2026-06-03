@@ -1261,23 +1261,16 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     # The real penalty card still appears when play stops (normal flow).
     for ws, first_pen_el in (nhl_data.get("_delayed_splits") or {}).items():
         period_num = ws // 1200 + 1
-        # Clock — exact, remaining time in period (matches ESPN clock.displayValue)
-        # ESPN plays show remaining time (20:00 → 0:00), so ws → remaining.
-        _ep  = ws % 1200          # elapsed seconds from period start
-        _rem = 1200 - _ep         # remaining seconds in period
-        _clk = f"{_rem // 60}:{_rem % 60:02d}"
-        # Score — exact, last ESPN play with elapsed <= ws
-        _score_play = next(
-            (p for p in reversed(plays) if p.get("elapsed", 0) <= ws
-             and p.get("away_score", "") not in ("", None)),
-            None
-        )
-        _away_sc = _score_play.get("away_score", "") if _score_play else ""
-        _home_sc = _score_play.get("home_score", "") if _score_play else ""
-        # Timestamp — approximate, nearest ESPN play to ws (~5-15s)
-        _near = min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None
-        _wall_et  = _near.get("wall_et",  "") if _near else ""
-        _wall_raw = _near.get("wall_raw", "") if _near else ""
+        # Clock, score, timestamp — all from nearest ESPN play to ws.
+        # ESPN plays carry real API values: clock.displayValue (game clock,
+        # stops during stoppages), awayScore, homeScore, wallclock.
+        # No formula. No sort-order dependency. Same source as every other card.
+        _near    = min(plays, key=lambda p: abs(p.get("elapsed", 0) - ws)) if plays else None
+        _clk     = _near.get("clock",      "") if _near else ""
+        _away_sc = _near.get("away_score", "") if _near else ""
+        _home_sc = _near.get("home_score", "") if _near else ""
+        _wall_et  = _near.get("wall_et",   "") if _near else ""
+        _wall_raw = _near.get("wall_raw",  "") if _near else ""
         plays.append({
             "seq":          -1,
             "period_num":   period_num,
