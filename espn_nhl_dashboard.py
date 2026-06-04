@@ -297,7 +297,8 @@ def fetch_nhl_plays(nhl_game_id, cache_bucket: int = 0):
 
     plays          = []
     delayed_events = []
-    penalty_events = []  # for delayed-penalty pairing (Item 2)
+    penalty_events = []  # for delayed-penalty pairing
+    goal_events    = []  # for goal-cancelled detection (Fix 2)
 
     for p in data.get("plays", []):
         pd       = p.get("periodDescriptor", {})
@@ -333,31 +334,67 @@ def fetch_nhl_plays(nhl_game_id, cache_bucket: int = 0):
             penalty_events.append({
                 "espn_elapsed":   espn_el,
                 "period":         pnum,
+                "owner_id":       str(det.get("eventOwnerTeamId", "") or ""),
                 "desc_key":       det.get("descKey", ""),
                 "duration":       det.get("duration", 2),
                 "committed_id":   det.get("committedByPlayerId"),
                 "drawn_id":       det.get("drawnByPlayerId"),
             })
 
-    # Pair each delayed-penalty event with its subsequent penalty event (Item 2).
-    # The penalty event carries desc_key, duration, and player IDs.
+        if type_key == "goal":
+            goal_events.append({"espn_elapsed": espn_el})
+
+    # Pair each delayed-penalty event with its subsequent penalty event.
+    # Fix 1: require matching owner_id (committing team) to prevent cross-pairing.
+    # Fix 4: detect split double minor (two 2-min events from same team within 5s).
+    # Fix 2: detect goal-cancelled calls when pairing fails.
     for dp in delayed_events:
-        dp_el = dp["espn_elapsed"]
+        dp_el    = dp["espn_elapsed"]
+        dp_owner = dp.get("owner_id", "")
+
+        # Fix 1: match owner_id when available; fall back to first in window
         paired = next(
             (pe for pe in penalty_events
-             if pe["espn_elapsed"] > dp_el and pe["espn_elapsed"] <= dp_el + 80),
+             if pe["espn_elapsed"] > dp_el
+             and pe["espn_elapsed"] <= dp_el + 80
+             and (not dp_owner or not pe.get("owner_id", "")
+                  or pe["owner_id"] == dp_owner)),
             None,
         )
         if paired:
+            raw_dur = int(paired["duration"]) if paired["duration"] else 2
+            # Fix 4: split double minor — two 2-min events same team within 5s
+            if raw_dur == 2:
+                paired_el = paired["espn_elapsed"]
+                split = next(
+                    (pe for pe in penalty_events
+                     if pe is not paired
+                     and pe.get("owner_id", "") == dp_owner
+                     and int(pe.get("duration") or 0) == 2
+                     and abs(pe["espn_elapsed"] - paired_el) <= 5),
+                    None,
+                )
+                dp["is_double_minor"] = split is not None
+                if dp["is_double_minor"]:
+                    raw_dur = 4
+            else:
+                dp["is_double_minor"] = False
             dp["desc_key"]       = paired["desc_key"]
-            dp["duration"]       = int(paired["duration"]) if paired["duration"] else 2
+            dp["duration"]       = raw_dur
             dp["committed_name"] = player_names.get(paired["committed_id"], "")
             dp["drawn_name"]     = player_names.get(paired["drawn_id"], "")
+            dp["goal_cancelled"] = False
         else:
+            # Fix 2: check if a goal stopped play in the window
+            dp["goal_cancelled"] = any(
+                g["espn_elapsed"] > dp_el and g["espn_elapsed"] <= dp_el + 80
+                for g in goal_events
+            )
             dp["desc_key"]       = ""
             dp["duration"]       = 2
             dp["committed_name"] = ""
             dp["drawn_name"]     = ""
+            dp["is_double_minor"] = False
 
     return {
         "plays":          plays,
@@ -851,27 +888,37 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         dp_pnum = dp["period"]
         oid     = str(dp.get("owner_id", "") or "")
 
-        # Build card text — enriched with infraction details when paired (Item 2)
+        # Build card text — enriched when paired, fallback for unpaired
         desc      = (dp.get("desc_key") or "").replace("-", " ").title()
         duration  = dp.get("duration", 2)
         committed = dp.get("committed_name", "")
         drawn     = dp.get("drawn_name", "")
+        # Fix 4: label double minor in duration text
+        dur_label = (f"{duration} min (double minor)"
+                     if dp.get("is_double_minor") else f"{duration} min")
 
         if desc and committed and drawn:
             dp_txt = (
-                f"Delayed Penalty: {desc} ({duration} min) "
+                f"Delayed Penalty: {desc} ({dur_label}) "
                 f"\u2014 {committed} against {drawn}"
             )
         elif desc and committed:
-            dp_txt = f"Delayed Penalty: {desc} ({duration} min) \u2014 {committed}"
+            dp_txt = f"Delayed Penalty: {desc} ({dur_label}) \u2014 {committed}"
         elif desc:
-            dp_txt = f"Delayed Penalty: {desc} ({duration} min)"
+            dp_txt = f"Delayed Penalty: {desc} ({dur_label})"
+        # Fix 2: goal stopped play in the delayed window
+        elif dp.get("goal_cancelled"):
+            team_abbr = (away_abbr if oid == away_id
+                         else (home_abbr if oid == home_id else ""))
+            pfx = f"{team_abbr} " if team_abbr else ""
+            dp_txt = f"Delayed Penalty \u2014 {pfx}play stopped by goal"
+        # Fix 3: owner_id = committing team — text direction corrected
         elif oid == away_id:
-            dp_txt = f"Referee arm raised \u2014 {away_abbr} drawing delayed penalty"
+            dp_txt = f"Delayed Penalty \u2014 {away_abbr} penalty called"
         elif oid == home_id:
-            dp_txt = f"Referee arm raised \u2014 {home_abbr} drawing delayed penalty"
+            dp_txt = f"Delayed Penalty \u2014 {home_abbr} penalty called"
         else:
-            dp_txt = "Referee arm raised \u2014 Delayed Penalty in progress"
+            dp_txt = "Delayed Penalty \u2014 in progress"
 
         _fwd  = [p for p in plays if p["elapsed"] >= dp_el]
         _near = min(_fwd, key=lambda p: p["elapsed"]) if _fwd else \
