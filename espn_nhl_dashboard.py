@@ -630,12 +630,20 @@ def build_en_windows_from_shifts(shifts, goalie_ids, delayed_events, game_state=
                 continue
             windows.append({"ws": ws, "we": we, "dur": dur})
 
-        # Open gap: last shift ended before period end — live games only
-        if game_state in ("LIVE", "CRIT") and per <= 3:
+        # Open gap: last shift ended before period end.
+        # Emitted for all game states — the backup filter is the guard against
+        # goalie changes. For completed games this correctly captures EN pulls
+        # where the goalie never returned because the game ended (e.g. Andersen
+        # P3 18:14→20:00 in SCF G1). Validated: backup filter excludes all
+        # known goalie-change cases (Comrie, Kochetkov) in regression tests.
+        if per <= 3:
             last    = sorted_s[-1]
-            we_last = espn_clock_to_seconds(last["endTime"], per)
+            ws_last = espn_clock_to_seconds(last["startTime"], per)
+            we_last = espn_clock_to_seconds(last["endTime"],   per)
             per_end = per * 1200
-            if per_end - we_last >= 1 and not has_backup(we_last, per_end, pid, own_tid):
+            # Guard: skip corrupted shift data where endTime precedes startTime
+            if we_last > ws_last and per_end - we_last >= 1 \
+                    and not has_backup(we_last, per_end, pid, own_tid):
                 windows.append({"ws": we_last, "we": per_end, "dur": per_end - we_last})
 
     return windows
