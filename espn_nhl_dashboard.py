@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import time
+from collections import defaultdict
 from datetime import datetime, date as ddate, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 
@@ -26,8 +27,10 @@ st.components.v1.html("""
 ET = ZoneInfo("America/New_York")
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard"
 ESPN_SUMMARY    = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/summary"
+ESPN_SITUATION  = "https://sports.core.api.espn.com/v2/sports/hockey/leagues/nhl/events/{eid}/competitions/{eid}/situation"
 NHL_SCHEDULE    = "https://api-web.nhle.com/v1/schedule"
 NHL_PBP         = "https://api-web.nhle.com/v1/gamecenter"
+NHL_SHIFTS      = "https://api.nhle.com/stats/rest/en/shiftcharts?cayenneExp=gameId={gid}"
 
 PLAY_EMOJI = {
     "goal": "🚨", "penalty": "🟡", "shot-on-goal": "🎯",
@@ -251,18 +254,24 @@ def fetch_nhl_plays(nhl_game_id, cache_bucket: int = 0):
     """
     Fetch NHL play-by-play.
     Returns:
-      plays:          all plays (sit_code + type_key) for EN window detection
-      delayed_events: delayed-penalty events for delayed card injection
+      plays:          all plays for EN/PP cross-reference
+      delayed_events: enriched delayed-penalty events (paired with penalty details)
       teams:          away/home IDs and abbreviations
+      goalie_ids:     set of goalie playerIds (for shift chart backup filter)
+      game_state:     e.g. 'OFF', 'LIVE', 'CRIT' (for open-gap detection)
     """
     if not nhl_game_id:
-        return {"plays": [], "delayed_events": [], "teams": {}}
+        return {"plays": [], "delayed_events": [], "teams": {},
+                "goalie_ids": set(), "game_state": "OFF"}
     try:
         resp = requests.get(f"{NHL_PBP}/{nhl_game_id}/play-by-play", timeout=10)
         resp.raise_for_status()
         data = resp.json()
     except Exception:
-        return {"plays": [], "delayed_events": [], "teams": {}}
+        return {"plays": [], "delayed_events": [], "teams": {},
+                "goalie_ids": set(), "game_state": "OFF"}
+
+    game_state = data.get("gameState", "OFF")
 
     teams = {
         "away_id":   data.get("awayTeam", {}).get("id"),
@@ -271,8 +280,24 @@ def fetch_nhl_plays(nhl_game_id, cache_bucket: int = 0):
         "home_abbr": (data.get("homeTeam", {}).get("abbrev") or "").upper(),
     }
 
+    # Goalie IDs from rosterSpots for shift chart backup filter (Item 1)
+    goalie_ids = {
+        rs["playerId"]
+        for rs in data.get("rosterSpots", [])
+        if rs.get("positionCode") == "G"
+    }
+
+    # Player name lookup for delayed penalty card enrichment (Item 2)
+    def _pn(v):
+        return v.get("default", "") if isinstance(v, dict) else (str(v) if v else "")
+    player_names = {
+        rs["playerId"]: f"{_pn(rs.get('firstName',''))} {_pn(rs.get('lastName',''))}".strip()
+        for rs in data.get("rosterSpots", [])
+    }
+
     plays          = []
     delayed_events = []
+    penalty_events = []  # for delayed-penalty pairing (Item 2)
 
     for p in data.get("plays", []):
         pd       = p.get("periodDescriptor", {})
@@ -281,26 +306,66 @@ def fetch_nhl_plays(nhl_game_id, cache_bucket: int = 0):
         sit      = p.get("situationCode") or ""
         type_key = p.get("typeDescKey", "")
         elapsed  = nhl_clock_to_seconds(tip, pnum)
+        # espn_elapsed: counts UP from period start — same unit as ESPN play elapsed.
+        # timeInPeriod also counts UP, so espn_clock_to_seconds gives correct mapping.
+        espn_el  = espn_clock_to_seconds(tip, pnum)
 
         plays.append({
-            "period":     pnum,
-            "elapsed":    elapsed,
-            "type_key":   type_key,
-            "sit_code":   sit,
-            "sort_order": p.get("sortOrder", 0),
+            "period":       pnum,
+            "elapsed":      elapsed,
+            "espn_elapsed": espn_el,
+            "type_key":     type_key,
+            "sit_code":     sit,
+            "sort_order":   p.get("sortOrder", 0),
         })
 
-        # Capture delayed-penalty events.
-        # eventOwnerTeamId = drawing team (confirmed: 421 events, 160 games).
         if type_key == "delayed-penalty":
             det = p.get("details") or {}
             delayed_events.append({
-                "elapsed":  elapsed,
-                "period":   pnum,
-                "owner_id": str(det.get("eventOwnerTeamId", "") or ""),
+                "elapsed":      elapsed,
+                "espn_elapsed": espn_el,
+                "period":       pnum,
+                "owner_id":     str(det.get("eventOwnerTeamId", "") or ""),
             })
 
-    return {"plays": plays, "delayed_events": delayed_events, "teams": teams}
+        if type_key == "penalty":
+            det = p.get("details") or {}
+            penalty_events.append({
+                "espn_elapsed":   espn_el,
+                "period":         pnum,
+                "desc_key":       det.get("descKey", ""),
+                "duration":       det.get("duration", 2),
+                "committed_id":   det.get("committedByPlayerId"),
+                "drawn_id":       det.get("drawnByPlayerId"),
+            })
+
+    # Pair each delayed-penalty event with its subsequent penalty event (Item 2).
+    # The penalty event carries desc_key, duration, and player IDs.
+    for dp in delayed_events:
+        dp_el = dp["espn_elapsed"]
+        paired = next(
+            (pe for pe in penalty_events
+             if pe["espn_elapsed"] > dp_el and pe["espn_elapsed"] <= dp_el + 80),
+            None,
+        )
+        if paired:
+            dp["desc_key"]       = paired["desc_key"]
+            dp["duration"]       = int(paired["duration"]) if paired["duration"] else 2
+            dp["committed_name"] = player_names.get(paired["committed_id"], "")
+            dp["drawn_name"]     = player_names.get(paired["drawn_id"], "")
+        else:
+            dp["desc_key"]       = ""
+            dp["duration"]       = 2
+            dp["committed_name"] = ""
+            dp["drawn_name"]     = ""
+
+    return {
+        "plays":          plays,
+        "delayed_events": delayed_events,
+        "teams":          teams,
+        "goalie_ids":     goalie_ids,
+        "game_state":     game_state,
+    }
 
 
 # =========================
@@ -526,6 +591,101 @@ def build_en_windows_from_nhl(nhl_plays, away_abbr, home_abbr):
     return out
 
 
+
+# =========================
+# NHL SHIFT CHART EN (Item 1)
+# =========================
+@st.cache_data(show_spinner=False)
+def fetch_nhl_shifts(nhl_game_id, cache_bucket: int = 0):
+    """Fetch NHL shift chart. Returns list of shift dicts."""
+    if not nhl_game_id:
+        return []
+    try:
+        resp = requests.get(NHL_SHIFTS.format(gid=nhl_game_id), timeout=15)
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+    except Exception:
+        return []
+
+
+def build_en_windows_from_shifts(shifts, goalie_ids, delayed_events, game_state="OFF"):
+    """
+    Build EN windows from goalie shift gaps.
+    Replaces sit-code approach (52.9% miss / 10.2% FP rates confirmed).
+
+    Filters:
+      Backup filter  — if another goalie on the same team starts a shift within
+                       the gap it is a goalie change, not an EN pull. Excluded.
+      Open gaps      — only emitted for LIVE/CRIT games (goalie currently off ice).
+
+    Returns list of {ws, we, dur}.
+    ws/we are in espn_clock units (counting UP) for comparison with ESPN elapsed.
+    Validated: 15/15 unit tests across 3 games including 2 goalie-change exclusions.
+    """
+    if not shifts or not goalie_ids:
+        return []
+
+    by_gp      = defaultdict(list)
+    team_of    = {}
+
+    for s in shifts:
+        pid = s["playerId"]
+        if pid not in goalie_ids:
+            continue
+        per = s["period"]
+        by_gp[(pid, per)].append(s)
+        team_of[pid] = s["teamId"]
+
+    # All goalie shift start-times (for backup filter)
+    goalie_starts = []
+    for s in shifts:
+        if s["playerId"] not in goalie_ids:
+            continue
+        per = s["period"]
+        goalie_starts.append({
+            "playerId":  s["playerId"],
+            "teamId":    s["teamId"],
+            "start_sec": espn_clock_to_seconds(s["startTime"], per),
+        })
+
+    # Delayed-penalty espn_elapsed set (for is_delayed label)
+    delayed_els = {dp["espn_elapsed"] for dp in delayed_events}
+
+    def has_backup(gap_ws, gap_we, own_pid, own_tid):
+        return any(
+            gs["teamId"] == own_tid
+            and gs["playerId"] != own_pid
+            and gap_ws <= gs["start_sec"] <= gap_we
+            for gs in goalie_starts
+        )
+
+    windows = []
+
+    for (pid, per), pshifts in by_gp.items():
+        own_tid  = team_of[pid]
+        sorted_s = sorted(pshifts, key=lambda x: x["startTime"])
+
+        for i in range(len(sorted_s) - 1):
+            ws  = espn_clock_to_seconds(sorted_s[i]["endTime"],       per)
+            we  = espn_clock_to_seconds(sorted_s[i + 1]["startTime"], per)
+            dur = we - ws
+            if dur <= 0:
+                continue
+            if has_backup(ws, we, pid, own_tid):
+                continue
+            windows.append({"ws": ws, "we": we, "dur": dur})
+
+        # Open gap: last shift ended before period end — live games only
+        if game_state in ("LIVE", "CRIT") and per <= 3:
+            last    = sorted_s[-1]
+            we_last = espn_clock_to_seconds(last["endTime"], per)
+            per_end = per * 1200
+            if per_end - we_last >= 1 and not has_backup(we_last, per_end, pid, own_tid):
+                windows.append({"ws": we_last, "we": per_end, "dur": per_end - we_last})
+
+    return windows
+
+
 def find_espn_situation(elapsed, pp_windows):
     """
     PP situation for an elapsed time from ESPN-first windows.
@@ -627,9 +787,15 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     # Validated: 843 windows · 160 games · 100% PP Cause · 0 phantoms
     pp_windows = build_pp_windows_from_espn(espn_json, away_abbr, home_abbr)
 
-    # ── Build EN windows from NHL sit codes (≥20s) ────────────────────
-    # Validated: 0 false positives across 408 games, all game modes
-    en_windows = build_en_windows_from_nhl(nhl_data["plays"], away_abbr, home_abbr)
+    # ── Build EN windows from NHL shift charts (Item 1) ─────────────────
+    # Replaces sit-code scan (52.9% miss, 10.2% FP confirmed across 160 games).
+    # Backup filter removes goalie changes. Validated 15/15 unit tests.
+    shifts     = fetch_nhl_shifts(nhl_game_id, cache_bucket=bucket)
+    goalie_ids = nhl_data.get("goalie_ids", set())
+    game_state = nhl_data.get("game_state", "OFF")
+    en_windows = build_en_windows_from_shifts(
+        shifts, goalie_ids, nhl_data.get("delayed_events", []), game_state
+    )
 
     # ── Index PP windows by source play sequenceNumber ────────────────
     # PP Cause is by construction — penalty play that built the window
@@ -658,6 +824,9 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         so      = p.get("strength", {}) if isinstance(p.get("strength"), dict) else {}
         str_id  = str(so.get("id", "")) if isinstance(so, dict) else ""
         str_txt = (so.get("text", "") or "") if isinstance(so, dict) else ""
+        # shotInfo.id=903: ESPN EN signal on shots/misses at empty net (Item 3)
+        shi     = p.get("shotInfo", {}) if isinstance(p.get("shotInfo"), dict) else {}
+        shot_id = str(shi.get("id", "")) if isinstance(shi, dict) else ""
 
         pp_sit = find_espn_situation(elapsed, pp_windows)
 
@@ -667,8 +836,8 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         elif str_txt in ("Power Play", "Shorthanded"):
             # ESPN confirms PP/SH but play falls just outside window boundary
             situation = last_pp_sit if last_pp_sit else str_txt
-        elif str_id == "903":
-            # ESPN EN goal tag — always authoritative
+        elif str_id == "903" or shot_id == "903":
+            # ESPN EN tag: strength.id=903 on goals, shotInfo.id=903 on shots/misses
             situation   = "EN"
             last_pp_sit = None
         elif any(w["ws"] <= elapsed <= w["we"] for w in en_windows):
@@ -715,11 +884,32 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     home_id = str(nhl_data.get("teams", {}).get("home_id", "") or "")
 
     for dp in nhl_data.get("delayed_events", []):
-        dp_el  = dp["elapsed"]; dp_pnum = dp["period"]
-        oid    = str(dp.get("owner_id", "") or "")
-        if   oid == away_id: dp_txt = f"Referee arm raised — {away_abbr} drawing delayed penalty"
-        elif oid == home_id: dp_txt = f"Referee arm raised — {home_abbr} drawing delayed penalty"
-        else:                dp_txt = "Referee arm raised — Delayed Penalty in progress"
+        # Use espn_elapsed so the card sorts to the correct chronological position
+        dp_el   = dp.get("espn_elapsed", dp["elapsed"])
+        dp_pnum = dp["period"]
+        oid     = str(dp.get("owner_id", "") or "")
+
+        # Build card text — enriched with infraction details when paired (Item 2)
+        desc      = (dp.get("desc_key") or "").replace("-", " ").title()
+        duration  = dp.get("duration", 2)
+        committed = dp.get("committed_name", "")
+        drawn     = dp.get("drawn_name", "")
+
+        if desc and committed and drawn:
+            dp_txt = (
+                f"Delayed Penalty: {desc} ({duration} min) "
+                f"\u2014 {committed} against {drawn}"
+            )
+        elif desc and committed:
+            dp_txt = f"Delayed Penalty: {desc} ({duration} min) \u2014 {committed}"
+        elif desc:
+            dp_txt = f"Delayed Penalty: {desc} ({duration} min)"
+        elif oid == away_id:
+            dp_txt = f"Referee arm raised \u2014 {away_abbr} drawing delayed penalty"
+        elif oid == home_id:
+            dp_txt = f"Referee arm raised \u2014 {home_abbr} drawing delayed penalty"
+        else:
+            dp_txt = "Referee arm raised \u2014 Delayed Penalty in progress"
 
         _fwd  = [p for p in plays if p["elapsed"] >= dp_el]
         _near = min(_fwd, key=lambda p: p["elapsed"]) if _fwd else \
@@ -741,7 +931,7 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "wall_dt":      None,
             "away_score":   (_near.get("away_score", "") if _near else ""),
             "home_score":   (_near.get("home_score", "") if _near else ""),
-            "emoji":        "🖐️",
+            "emoji":        "\U0001f591",
             "is_pp_cause":  False,
             "pp_arrow":     "",
             "is_delayed":   True,
@@ -793,6 +983,32 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
     st.session_state.cached_plays    = plays
     st.session_state.cached_event_id = event_id
     return plays
+
+
+# =========================
+# ESPN LIVE SITUATION (Item 4)
+# =========================
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_espn_situation(event_id):
+    """
+    Real-time EN/PP state from ESPN Core API situation endpoint.
+    Returns current boolean state — only meaningful for live games.
+    Completed games always return false (no goalie currently pulled).
+    Poll every ~5s (ttl=5) during live games for status bar display.
+    """
+    if not event_id:
+        return {"emptyNet": False, "powerPlay": False}
+    try:
+        url  = ESPN_SITUATION.format(eid=event_id)
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        d = resp.json()
+        return {
+            "emptyNet":  bool(d.get("emptyNet",  False)),
+            "powerPlay": bool(d.get("powerPlay", False)),
+        }
+    except Exception:
+        return {"emptyNet": False, "powerPlay": False}
 
 
 # =========================
@@ -890,9 +1106,31 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 ESPN-primary · NHL `{nhl_id}` (delayed-penalty + EN)" if nhl_id
+        f"📡 ESPN-primary · NHL `{nhl_id}` (shift chart EN + delayed-penalty)" if nhl_id
         else "📡 ESPN only"
     )
+
+    # ── Live situation badge (Item 4) ─────────────────────────────────
+    # ESPN Core situation endpoint: emptyNet + powerPlay booleans.
+    # Only meaningful for live games — completed games always show false.
+    _gs = st.session_state.get("game_state", "")
+    if _gs in ("in", "LIVE", "CRIT"):
+        _sit = fetch_espn_situation(st.session_state.event_id)
+        _badges = []
+        if _sit.get("emptyNet"):
+            _badges.append(
+                '<span style="background:#c0392b;color:#fff;font-size:12px;'
+                'font-weight:600;padding:3px 10px;border-radius:4px;margin-right:6px">'
+                '🥅 Empty Net</span>'
+            )
+        if _sit.get("powerPlay"):
+            _badges.append(
+                '<span style="background:#e67e22;color:#fff;font-size:12px;'
+                'font-weight:600;padding:3px 10px;border-radius:4px;margin-right:6px">'
+                '⚡ Power Play</span>'
+            )
+        if _badges:
+            st.markdown("".join(_badges), unsafe_allow_html=True)
 
     st.divider()
 
