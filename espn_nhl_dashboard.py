@@ -546,51 +546,6 @@ def build_pp_windows_from_espn(espn_json, away_abbr, home_abbr):
     return windows
 
 
-def build_en_windows_from_nhl(nhl_plays, away_abbr, home_abbr):
-    """
-    EN windows from NHL situationCode digit scan (sit[1]==6 or sit[2]==6).
-    Threshold ≥ 20s eliminates delayed-penalty goalie-pull noise (tops at 4-5s).
-
-    Validated across 408 games (166 playoff + 242 regular season):
-      Noise max: 4-5s  |  Real EN min: 20s  |  False positives at ≥20s: 0
-      3v3 OT: 0 real EN windows (teams never pull in 3v3). Shootout: 0 windows.
-
-    Returns list of {ws, we, dur, pulled}.
-    """
-    EN_MIN = 20
-    out = []; in_en = False; ws = None; pulled = None; ws_p = None
-
-    for p in sorted(nhl_plays, key=lambda x: (x["elapsed"], x.get("sort_order", 0))):
-        pnum = p["period"]; el = p["elapsed"]
-        sit  = p.get("sit_code", "") or ""; tkey = p.get("type_key", "")
-
-        if tkey in ("period-start","period-end","game-end","shootout-complete"):
-            if in_en and ws is not None:
-                dur = el - ws
-                if dur >= EN_MIN: out.append({"ws":ws,"we":el,"dur":dur,"pulled":pulled})
-            in_en = False; ws = None; pulled = None; ws_p = None
-            continue
-        if len(sit) < 4: continue
-        try: a = int(sit[1]); h = int(sit[2])
-        except: continue
-        is6 = (a == 6 or h == 6)
-
-        if is6 and not in_en:
-            in_en = True; ws = el; ws_p = pnum
-            pulled = away_abbr if a == 6 else home_abbr
-        elif is6 and in_en:
-            if pnum != ws_p:
-                dur = el - ws
-                if dur >= EN_MIN: out.append({"ws":ws,"we":el,"dur":dur,"pulled":pulled})
-                in_en = False; ws = None; pulled = None; ws_p = None
-        elif not is6 and in_en:
-            dur = el - ws
-            if dur >= EN_MIN: out.append({"ws":ws,"we":el,"dur":dur,"pulled":pulled})
-            in_en = False; ws = None; pulled = None; ws_p = None
-
-    return out
-
-
 
 # =========================
 # NHL SHIFT CHART EN (Item 1)
@@ -876,7 +831,6 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "is_pp_cause":  is_pp_cause,
             "pp_arrow":     pp_arrow,
             "is_delayed":   False,
-            "is_carryover": False,
         })
 
     # ── Inject Delayed Penalty cards (from NHL delayed-penalty events) ─
@@ -935,48 +889,7 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             "is_pp_cause":  False,
             "pp_arrow":     "",
             "is_delayed":   True,
-            "is_carryover": False,
         })
-
-    # ── Inject Carry-over cards (PP window spans period boundary) ─────
-    # Detect period-start plays that fall inside a PP window.
-    period_start_els = {
-        p["elapsed"] for p in plays
-        if (p.get("type_text") or "").lower() in ("period start", "period-start")
-        or p.get("type_id") in ("12", "")  # ESPN period-start type
-    }
-    # Fallback: infer period starts from elapsed arithmetic
-    for pn in range(1, 7):
-        period_start_els.add(pn * 1200)
-
-    for win in pp_windows:
-        for ps_el in period_start_els:
-            if win["ws"] < ps_el < win["we"]:
-                _fwd  = [p for p in plays if p["elapsed"] > ps_el]
-                _near = min(_fwd, key=lambda p: p["elapsed"]) if _fwd else None
-                co_pnum = ps_el // 1200 + 1
-                plays.append({
-                    "seq":          -3,
-                    "period_num":   co_pnum,
-                    "period_type":  "REG",
-                    "period_label": f"P{co_pnum}",
-                    "clock":        "0:00",
-                    "elapsed":      ps_el,
-                    "type_text":    "Carry-over penalty",
-                    "type_id":      "",
-                    "text":         "Power play continues from previous period penalty",
-                    "situation":    win["sit"],
-                    "wall_raw":     "",
-                    "wall_et":      "",
-                    "wall_dt":      None,
-                    "away_score":   (_near.get("away_score", "") if _near else ""),
-                    "home_score":   (_near.get("home_score", "") if _near else ""),
-                    "emoji":        "🔄",
-                    "is_pp_cause":  False,
-                    "pp_arrow":     "",
-                    "is_delayed":   False,
-                    "is_carryover": True,
-                })
 
     plays.sort(key=lambda p: (p.get("elapsed", 0), p.get("seq", 0)))
 
@@ -1184,7 +1097,7 @@ if st.session_state.view == "game":
                     if not p["wall_dt"] or START_DT is None or END_DT is None: return False
                     if not (START_DT <= p["wall_dt"] <= END_DT): return False
                 if USE_GOAL_FILTER and p["type_text"] != "Goal": return False
-                if USE_PP_FILTER and " PP" not in sit and not p.get("is_pp_cause", False) and not p.get("is_delayed", False) and not p.get("is_carryover", False): return False
+                if USE_PP_FILTER and " PP" not in sit and not p.get("is_pp_cause", False) and not p.get("is_delayed", False): return False
                 if USE_GP_FILTER and "EN" not in sit: return False
                 return True
             st.session_state.filtered_plays  = [p for p in plays if passes(p)]
@@ -1292,28 +1205,6 @@ if st.session_state.view == "game":
   </div>
   <p style="margin:12px 0 0 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
   <p style="margin:12px 0 0 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
-  <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
-  {time_row}
-</div>
-""", unsafe_allow_html=True)
-        elif p.get("is_carryover"):
-            # Carry-over penalty card — green border + badge
-            # Appears when a penalty from a previous period or earlier in the
-            # same period is still actively serving at the start of this window.
-            wall_et = p.get("wall_et", "")
-            time_row = (
-                f'<p style="margin:12px 0 0 0;font-size:1rem">🕐 <b>Time (ET):</b>'
-                f' <code>approx {wall_et}</code></p>'
-                if wall_et and wall_et != "N/A" else ""
-            )
-            st.markdown(f"""
-<div style="border-left:3px solid #1A7A4A;padding-left:12px;margin:20px 0 0 0;border-radius:0">
-  <div style="display:flex;align-items:center;gap:10px;margin:0 0 12px 0">
-    <span style="font-size:1.5rem;font-weight:600;line-height:1.3">🔄 {p.get('period_label')} | ⏱️ {p.get('clock')}</span>
-    <span style="background:#E6F4EC;color:#1A7A4A;font-size:12px;font-weight:500;padding:2px 8px;border-radius:4px;white-space:nowrap">Carry-over</span>
-  </div>
-  <p style="margin:12px 0 0 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
-  <p style="margin:12px 0 0 0;font-size:1rem">⚖️ <b>Strength:</b> <code>{p.get('situation')}</code></p>
   <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
   {time_row}
 </div>
