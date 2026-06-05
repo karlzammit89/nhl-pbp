@@ -927,6 +927,13 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         _near = min(_fwd, key=lambda p: p["elapsed"]) if _fwd else \
                 (min(plays, key=lambda p: abs(p["elapsed"] - dp_el)) if plays else None)
 
+        # Change 1: suppress delayed card when a PP Cause play already exists
+        # at the same elapsed time — the penalty is already shown as PP Cause,
+        # so the delayed card would be a duplicate of the same event.
+        if any(p.get("is_pp_cause") and abs(p.get("elapsed", -9999) - dp_el) <= 5
+               for p in plays):
+            continue
+
         plays.append({
             "seq":          -2,
             "period_num":   dp_pnum,
@@ -1077,7 +1084,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 ESPN-primary · NHL `{nhl_id}` (shift chart EN + delayed-penalty)" if nhl_id
+        f"📡 NHL `{nhl_id}`" if nhl_id
         else "📡 ESPN only"
     )
 
@@ -1269,14 +1276,51 @@ if st.session_state.view == "game":
 """, unsafe_allow_html=True)
         else:
             # Standard render
-            st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
-            st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
-            st.markdown(f"🎯 **Event:** {p.get('type_text')}")
-            if " PP" in sit or sit == "EN":
-                st.markdown(f"⚖️ **Strength:** `{sit}`")
-            st.markdown(f"📋 **Play:** {p.get('text')}")
-            if p.get("wall_et") and p.get("wall_et") != "N/A":
-                st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
+            # Change 2: amber left border on PP plays (matches PP Cause border)
+            # Change 3: teal left border on EN plays + "Empty Net" strength text
+            # EN takes priority over PP when both are present
+            wall_et  = p.get("wall_et", "")
+            time_row = (
+                f'<p style="margin:12px 0 0 0;font-size:1rem">🕐 <b>Time (ET):</b>'
+                f' <code>{wall_et}</code></p>'
+                if wall_et and wall_et != "N/A" else ""
+            )
+
+            if "EN" in sit:
+                # Teal border — EN takes priority over PP
+                sit_display = "Empty Net" if sit == "EN" else sit
+                st.markdown(f"""
+<div style="border-left:3px solid #1D9E75;padding-left:12px;margin:20px 0 0 0;border-radius:0">
+  <p style="margin:0 0 12px 0;font-size:1.5rem;font-weight:600;line-height:1.3">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">⚖️ <b>Strength:</b> <code>{sit_display}</code></p>
+  <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
+  {time_row}
+</div>
+""", unsafe_allow_html=True)
+
+            elif " PP" in sit:
+                # Amber border — matches PP Cause border color
+                st.markdown(f"""
+<div style="border-left:3px solid #BA7517;padding-left:12px;margin:20px 0 0 0;border-radius:0">
+  <p style="margin:0 0 12px 0;font-size:1.5rem;font-weight:600;line-height:1.3">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">📊 <b>Score:</b> {p.get('away_score')} - {p.get('home_score')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">🎯 <b>Event:</b> {p.get('type_text')}</p>
+  <p style="margin:12px 0 0 0;font-size:1rem">⚖️ <b>Strength:</b> <code>{sit}</code></p>
+  <p style="margin:12px 0 0 0;font-size:1rem">📋 <b>Play:</b> {p.get('text')}</p>
+  {time_row}
+</div>
+""", unsafe_allow_html=True)
+
+            else:
+                # Plain plays — no strength border
+                st.subheader(f"{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}")
+                st.markdown(f"📊 **Score:** {p.get('away_score')} - {p.get('home_score')}")
+                st.markdown(f"🎯 **Event:** {p.get('type_text')}")
+                st.markdown(f"📋 **Play:** {p.get('text')}")
+                if p.get("wall_et") and p.get("wall_et") != "N/A":
+                    st.markdown(f"🕐 **Time (ET):** `{p['wall_et']}`")
 
         st.divider()
 
