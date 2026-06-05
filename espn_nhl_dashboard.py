@@ -673,7 +673,10 @@ def build_en_windows_from_shifts(shifts, goalie_ids, delayed_events, game_state=
         # where the goalie never returned because the game ended (e.g. Andersen
         # P3 18:14→20:00 in SCF G1). Validated: backup filter excludes all
         # known goalie-change cases (Comrie, Kochetkov) in regression tests.
-        if per <= 3:
+        # Option 1 zero-shift guard: for live games require 2+ shifts for this
+        # (pid, per) so a single in-progress shift with a stale endTime cannot
+        # create a phantom EN window across the period (SCF G2 P2 phantom fix).
+        if per <= 3 and (game_state not in ("LIVE", "CRIT") or len(sorted_s) >= 2):
             last    = sorted_s[-1]
             ws_last = espn_clock_to_seconds(last["startTime"], per)
             we_last = espn_clock_to_seconds(last["endTime"],   per)
@@ -776,7 +779,7 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         return []
 
     # ── Fetch NHL (delayed-penalty events + EN sit codes) ─────────────
-    bucket   = st.session_state.get("force_bucket") or int(time.time() // 30)
+    bucket   = st.session_state.get("force_bucket") or int(time.time() // 15)
     nhl_data = (fetch_nhl_plays(nhl_game_id, cache_bucket=bucket)
                 if nhl_game_id
                 else {"plays": [], "delayed_events": [], "teams": {}})
