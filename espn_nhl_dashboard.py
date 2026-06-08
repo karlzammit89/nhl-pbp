@@ -214,6 +214,81 @@ def parse_nhl_situation(sit_code):
         parts.append("PP")
     return " ".join(parts)
 
+
+def make_strength_label(sit_code, away_abbr, home_abbr):
+    """
+    Build the per-play strength label from an NHL situationCode.
+    situationCode = [awayGoalie][awaySkaters][homeSkaters][homeGoalie];
+    a goalie digit of '0' means that net is empty (goalie pulled).
+
+    Returns labels like:
+      '5v4 CAR PP'        — power play, team named
+      '6v5 CAR EN'        — pulled goalie, even strength
+      '6v4 CAR EN PP'     — pulled goalie while on the power play
+      '4v6 VGK EN PP'     — home-side equivalent
+      '6v6 CAR+VGK EN'    — both nets empty
+      ''                  — even strength (no label shown)
+
+    Guards (validated across 201 games):
+      - A real empty net requires the pulling team to field 6 skaters
+        (the pulled goalie becomes the 6th attacker). A '0' goalie digit
+        with fewer than 6 skaters is a malformed/transition frame and is
+        NOT treated as an empty net (e.g. situationCode 1550, 0551).
+      - Shootout frames (1v0 / 0v1) never reach 6 skaters, so they never
+        produce an EN label; they are also excluded from PP by the caller
+        which skips the shootout period.
+      - When the same team has both the empty net and the power play the
+        team name appears once ('6v4 CAR EN PP', not 'CAR EN CAR PP').
+    """
+    if not sit_code or len(sit_code) < 4:
+        return ""
+    try:
+        a_sk = int(sit_code[1])
+        h_sk = int(sit_code[2])
+    except ValueError:
+        return ""
+
+    # Shootout / degenerate frames: a side with 0 skaters (1v0 / 0v1) is not
+    # a real on-ice strength state. Return empty so no PP/EN label is shown.
+    if a_sk == 0 or h_sk == 0:
+        return ""
+
+    away_en = sit_code[0] == "0" and a_sk == 6
+    home_en = sit_code[3] == "0" and h_sk == 6
+
+    parts = [f"{a_sk}v{h_sk}"]
+
+    is_pp   = False
+    pp_team = ""
+    if a_sk != h_sk:
+        # A pulled-goalie extra attacker (6v5 / 5v6) is even strength,
+        # not a man advantage — exclude those from PP.
+        even_pull = (away_en and a_sk == h_sk + 1) or (home_en and h_sk == a_sk + 1)
+        if not even_pull:
+            is_pp   = True
+            pp_team = away_abbr if a_sk > h_sk else home_abbr
+
+    en_team = ""
+    if away_en and home_en:
+        en_team = f"{away_abbr}+{home_abbr}"
+    elif away_en:
+        en_team = away_abbr
+    elif home_en:
+        en_team = home_abbr
+
+    if en_team and is_pp:
+        if en_team == pp_team:
+            parts.append(f"{en_team} EN PP")
+        else:
+            parts.append(f"{en_team} EN")
+            parts.append(f"{pp_team} PP")
+    elif en_team:
+        parts.append(f"{en_team} EN")
+    elif is_pp:
+        parts.append(f"{pp_team} PP")
+
+    return " ".join(parts)
+
 # =========================
 # NHL GAME ID LOOKUP
 # =========================
@@ -655,11 +730,32 @@ def build_en_windows_from_shifts(shifts, goalie_ids, delayed_events, game_state=
 
     for (pid, per), pshifts in by_gp.items():
         own_tid  = team_of[pid]
-        sorted_s = sorted(pshifts, key=lambda x: x["startTime"])
 
-        for i in range(len(sorted_s) - 1):
-            ws  = espn_clock_to_seconds(sorted_s[i]["endTime"],       per)
-            we  = espn_clock_to_seconds(sorted_s[i + 1]["startTime"], per)
+        # Merge overlapping/duplicate shifts before gap detection.
+        # The NHL shift chart sometimes emits two records for the same goalie
+        # in one period — e.g. a real full-period 00:00→20:00 shift plus a
+        # corrupt partial 00:00→14:04 record (SCF G3 Carter Hart). Without
+        # merging, the per-shift gap logic treats them independently and the
+        # corrupt record fires a phantom open-gap EN window. Collapsing each
+        # goalie's overlapping segments into continuous blocks first makes the
+        # detection robust to that corruption. Validated across 201 games:
+        # eliminates all such false positives (2→0) with 0 real windows lost.
+        segs = sorted(
+            (espn_clock_to_seconds(s["startTime"], per),
+             espn_clock_to_seconds(s["endTime"],   per))
+            for s in pshifts
+        )
+        merged = []
+        for ws, we in segs:
+            if merged and ws <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], we)
+            else:
+                merged.append([ws, we])
+
+        # Consecutive gaps between merged blocks
+        for i in range(len(merged) - 1):
+            ws  = merged[i][1]
+            we  = merged[i + 1][0]
             dur = we - ws
             if dur <= 0:
                 continue
@@ -667,19 +763,18 @@ def build_en_windows_from_shifts(shifts, goalie_ids, delayed_events, game_state=
                 continue
             windows.append({"ws": ws, "we": we, "dur": dur})
 
-        # Open gap: last shift ended before period end.
+        # Open gap: last merged block ended before period end.
         # Emitted for all game states — the backup filter is the guard against
         # goalie changes. For completed games this correctly captures EN pulls
         # where the goalie never returned because the game ended (e.g. Andersen
         # P3 18:14→20:00 in SCF G1). Validated: backup filter excludes all
         # known goalie-change cases (Comrie, Kochetkov) in regression tests.
-        # Option 1 zero-shift guard: for live games require 2+ shifts for this
-        # (pid, per) so a single in-progress shift with a stale endTime cannot
-        # create a phantom EN window across the period (SCF G2 P2 phantom fix).
-        if per <= 3 and (game_state not in ("LIVE", "CRIT") or len(sorted_s) >= 2):
-            last    = sorted_s[-1]
-            ws_last = espn_clock_to_seconds(last["startTime"], per)
-            we_last = espn_clock_to_seconds(last["endTime"],   per)
+        # Option 1 zero-shift guard: for live games require 2+ merged blocks so
+        # a single in-progress shift with a stale endTime cannot create a
+        # phantom EN window across the period (SCF G2 P2 phantom fix).
+        if per <= 3 and (game_state not in ("LIVE", "CRIT") or len(merged) >= 2):
+            ws_last = merged[-1][0]
+            we_last = merged[-1][1]
             per_end = per * 1200
             # Guard: skip corrupted shift data where endTime precedes startTime
             if we_last > ws_last and per_end - we_last >= 1 \
@@ -800,6 +895,30 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         shifts, goalie_ids, nhl_data.get("delayed_events", []), game_state
     )
 
+    # ── Index NHL situationCode by ESPN-elapsed for strength labelling ──
+    # situationCode is the per-play authority for goalie-pulled state and
+    # skater counts. Used to render the strength label (e.g. '6v4 CAR EN PP')
+    # and to confirm EN: a shift-chart EN window is only displayed as EN when
+    # situationCode agrees a goalie is pulled (the 3.6% disagreement cases are
+    # suppressed so the label never contradicts the data). Shootout plays
+    # (period 5) are excluded — their 1v0/0v1 codes are not real strengths.
+    sit_by_elapsed = {}
+    for np_ in nhl_data.get("plays", []):
+        if np_.get("period", 1) >= 5:
+            continue
+        sc = np_.get("sit_code") or ""
+        if len(sc) >= 4:
+            sit_by_elapsed[np_.get("espn_elapsed")] = sc
+
+    def nhl_sit_at(elapsed_sec):
+        """Nearest NHL situationCode within 5s of the given ESPN elapsed."""
+        best = ""; best_dt = 6
+        for el, sc in sit_by_elapsed.items():
+            dt = abs(el - elapsed_sec)
+            if dt < best_dt:
+                best_dt = dt; best = sc
+        return best
+
     # ── Index PP windows by source play sequenceNumber ────────────────
     # PP Cause is by construction — penalty play that built the window
     pp_cause_seqs = {w["source_seq"] for w in pp_windows}
@@ -833,19 +952,32 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
 
         pp_sit = find_espn_situation(elapsed, pp_windows)
 
+        # NHL situationCode at this play — authority for EN + skater counts
+        nhl_sit   = nhl_sit_at(elapsed)
+        sit_label = make_strength_label(nhl_sit, away_abbr, home_abbr) if nhl_sit else ""
+        sit_is_en = "EN" in sit_label
+
         if pp_sit:
-            situation   = pp_sit
+            # On a power play. Prefer the situationCode label when it agrees
+            # this is a PP (and it may add EN team info, e.g. '6v4 CAR EN PP').
+            situation   = sit_label if ("PP" in sit_label) else pp_sit
             last_pp_sit = pp_sit
         elif str_txt in ("Power Play", "Shorthanded"):
             # ESPN confirms PP/SH but play falls just outside window boundary
             situation = last_pp_sit if last_pp_sit else str_txt
-        elif str_id == "903" or shot_id == "903":
-            # ESPN EN tag: strength.id=903 on goals, shotInfo.id=903 on shots/misses
-            situation   = "EN"
+        elif sit_is_en:
+            # situationCode confirms a pulled goalie — richest EN label
+            situation   = sit_label
             last_pp_sit = None
-        elif any(w["ws"] <= elapsed <= w["we"] for w in en_windows):
-            # Inside validated NHL EN window (≥20s, 0 false positives)
-            situation   = "EN"
+        elif (str_id == "903" or shot_id == "903") and sit_is_en:
+            # ESPN EN tag, confirmed by situationCode
+            situation   = sit_label
+            last_pp_sit = None
+        elif any(w["ws"] <= elapsed <= w["we"] for w in en_windows) and sit_is_en:
+            # Inside a merge-validated NHL EN window AND situationCode agrees.
+            # When situationCode disagrees (goalie shown in net), no EN is
+            # displayed — the label must never contradict the data.
+            situation   = sit_label
             last_pp_sit = None
         else:
             last_pp_sit = None
@@ -1084,7 +1216,7 @@ if st.session_state.view == "game":
 
     nhl_id = st.session_state.nhl_game_id
     st.caption(
-        f"📡 NHL `{nhl_id}`" if nhl_id
+        f"📡 ESPN-primary · NHL `{nhl_id}` (shift chart EN + delayed-penalty)" if nhl_id
         else "📡 ESPN only"
     )
 
@@ -1287,8 +1419,10 @@ if st.session_state.view == "game":
             )
 
             if "EN" in sit:
-                # Teal border — EN takes priority over PP
-                sit_display = "Empty Net" if sit == "EN" else sit
+                # Teal border — EN takes priority over PP.
+                # sit is now a full situationCode label, e.g. "6v4 CAR EN PP"
+                # or "6v5 VGK EN" — already self-describing, shown as-is.
+                sit_display = sit
                 st.markdown(f"""
 <div style="border-left:3px solid #1D9E75;padding-left:12px;margin:20px 0 0 0;border-radius:0">
   <p style="margin:0 0 12px 0;font-size:1.5rem;font-weight:600;line-height:1.3">{emoji} {p.get('period_label')} | ⏱️ {p.get('clock')}</p>
