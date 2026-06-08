@@ -907,8 +907,22 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         if np_.get("period", 1) >= 5:
             continue
         sc = np_.get("sit_code") or ""
-        if len(sc) >= 4:
-            sit_by_elapsed[np_.get("espn_elapsed")] = sc
+        if len(sc) < 4:
+            continue
+        el = np_.get("espn_elapsed")
+        prev = sit_by_elapsed.get(el)
+        # Multiple plays can share one elapsed time (e.g. a goal scored into an
+        # empty net and the faceoff immediately after it are both stamped at the
+        # same second). The goal carries the net-empty code (a '0' goalie digit)
+        # while the post-goal faceoff shows the goalie back. Prefer the
+        # goalie-pulled code so the empty-net play keeps its EN label instead of
+        # being overwritten by the following even-strength frame (SCF G3 18:18).
+        if prev is not None:
+            prev_pulled = prev[0] == "0" or prev[3] == "0"
+            this_pulled = sc[0] == "0" or sc[3] == "0"
+            if prev_pulled and not this_pulled:
+                continue  # keep the existing pulled-goalie code
+        sit_by_elapsed[el] = sc
 
     def nhl_sit_at(elapsed_sec):
         """Nearest NHL situationCode within 5s of the given ESPN elapsed."""
