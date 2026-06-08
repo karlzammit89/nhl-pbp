@@ -577,6 +577,24 @@ def build_pp_windows_from_espn(espn_json, away_abbr, home_abbr):
         pm = type_obj.get("penaltyMinutes") if isinstance(type_obj, dict) else None
         try:   mins = int(pm) if pm is not None else None
         except: mins = None
+
+        # Penalty-shot guard: a penalty shot awards a shot, NOT a power play,
+        # and carries no penalty minutes (penaltyMinutes is None/0). ESPN types
+        # these as "... on Breakaway" (ids 135/136/137) with pm=None. Without
+        # this guard the duration fallback below defaults such a play to a 2:00
+        # minor and builds a phantom PP window (SCF G3: the 04:04 PS-slash
+        # created a false PP that extended the displayed advantage past the real
+        # 05:15 expiry of the 03:15 holding minor). A penalty shot must create
+        # no window — skip it. Confirmed against situationCode: the man-advantage
+        # ran 03:15→05:15 only; the 04:04 penalty shot never changed strength.
+        is_penalty_shot = (
+            (pm is None or pm == 0)
+            and ("breakaway" in text.lower() or " ps " in f" {text.lower()} "
+                 or text.lower().startswith("ps "))
+        )
+        if is_penalty_shot:
+            continue
+
         if mins is None:
             txt = text.lower()
             if "double minor" in txt:                            mins = 4
@@ -584,6 +602,10 @@ def build_pp_windows_from_espn(espn_json, away_abbr, home_abbr):
             elif "misconduct" in txt:                            mins = 10
             else:                                                mins = 2
         if mins >= 10: continue
+        # A real minor/double-minor/major always carries penalty minutes ≥ 2;
+        # a 0-minute penalty with no recognised major/dm/misconduct text is not
+        # a power-play-creating infraction.
+        if mins <= 0: continue
 
         pens.append({
             "elapsed": elapsed, "we": elapsed + mins * 60,
