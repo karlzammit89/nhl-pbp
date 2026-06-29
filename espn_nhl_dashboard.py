@@ -1032,7 +1032,15 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
         is_pp_cause = (seq in pp_cause_seqs)
         if is_pp_cause:
             win      = seq_to_win[seq]
-            pp_arrow = f"5v5 → {win['sit']}"
+            # Arrow shows the real strength transition this penalty causes.
+            # 'Before' is the strength one second before this window opens and
+            # 'after' one second after — both resolved over ALL windows, so a
+            # penalty taken while a power play is already running reads its true
+            # transition (e.g. '4v5 PP → 4v4 PP' for offsetting minors) instead
+            # of a hardcoded '5v5 → …'.
+            before   = find_espn_situation(win["ws"] - 1, pp_windows) or "5v5"
+            after    = find_espn_situation(win["ws"] + 1, pp_windows) or win["sit"]
+            pp_arrow = f"{before} → {after}"
         else:
             pp_arrow = ""
 
