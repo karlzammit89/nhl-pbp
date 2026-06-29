@@ -1007,8 +1007,15 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
             # this is a PP (and it may add EN team info, e.g. '6v4 CAR EN PP').
             situation   = sit_label if ("PP" in sit_label) else pp_sit
             last_pp_sit = pp_sit
-        elif str_txt in ("Power Play", "Shorthanded"):
-            # ESPN confirms PP/SH but play falls just outside window boundary
+        elif str_txt in ("Power Play", "Shorthanded") and any(
+                w["ws"] - 5 <= elapsed <= w["we"] + 5 for w in pp_windows):
+            # ESPN confirms PP/SH and the play sits within 5s of a real PP
+            # window edge — a genuine just-outside-the-boundary rounding case.
+            # The proximity guard is essential: ESPN's flat strength token lags
+            # and stays tagged 'Power Play' on Period End / Period Start rows
+            # well after a penalty has expired (SCF G6: Andersson's penalty ended
+            # P2 19:04 but the 20:00 and P3 00:00 rows were still tagged PP). Once
+            # past any window, trust the window math (even strength), not the tag.
             situation = last_pp_sit if last_pp_sit else str_txt
         elif sit_is_en:
             # situationCode confirms a pulled goalie — richest EN label
