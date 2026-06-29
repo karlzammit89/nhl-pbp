@@ -92,6 +92,8 @@ ESPN_KNOWN_PENALTY_IDS = {
     136,   # Tripping on Breakaway
     137,   # Slashing on Breakaway
     140,   # Game Misconduct - Head Coach (bench minor)
+    139,   # Delaying Game - Face-off Violation (Rule 76.4: 2-min bench minor,
+           #   2nd face-off violation in same draw → opponent gets a power play)
     142,   # Embellishment
     149,   # Removing Opponent Helmet
     150,   # Goalie Removed Own Mask
@@ -818,6 +820,13 @@ def find_espn_situation(elapsed, pp_windows):
     # Multiple overlapping windows
     ac = sum(1 for w in matching if w["short"] == "away")
     hc = sum(1 for w in matching if w["short"] == "home")
+    # Opposing penalties — each team short the same number of skaters nets to
+    # even-but-reduced strength (4-on-4 for one each, 3-on-3 for two each). This
+    # is the same penalty data ESPN already tracks; two opposing windows simply
+    # overlap. Labelled with a trailing ' PP' so it inherits PP styling, the
+    # PP-only filter, and the PP count — 4v4/3v3 is special strength, not 5v5.
+    if ac >= 1 and hc >= 1 and ac == hc:
+        return "3v3 PP" if ac >= 2 else "4v4 PP"
     if ac >= 2 and hc == 0: return "3v5 PP"   # away has 2 in box
     if hc >= 2 and ac == 0: return "5v3 PP"   # home has 2 in box
     return matching[0]["sit"]
@@ -988,48 +997,32 @@ def get_parsed_plays(event_id, nhl_game_id, away_abbr="", home_abbr=""):
 
         pp_sit = find_espn_situation(elapsed, pp_windows)
 
-        # NHL situationCode at this play — authority for EN + skater counts.
-        # When a situationCode is present (within the lookup window) it is the
-        # sole authority for the displayed strength: it encodes every on-ice
-        # state ESPN's flat PP/SH token and PP-window overlay cannot — combined
-        # penalties (4v4), the exact moment a man-advantage expires (5v5), and
-        # pulled-goalie frames. The ESPN PP-window overlay (pp_sit) is demoted
-        # to a fallback used only when no situationCode is available, because it
-        # over-runs real penalty expiries and is blind to offsetting penalties.
+        # NHL situationCode at this play — authority for EN + skater counts
         nhl_sit   = nhl_sit_at(elapsed)
         sit_label = make_strength_label(nhl_sit, away_abbr, home_abbr) if nhl_sit else ""
         sit_is_en = "EN" in sit_label
-        # Display label: situationCode label is shown for every non-5v5 state
-        # (4v4 and 3v3 included). Plain 5v5 stays blank, matching prior even-
-        # strength behaviour. make_strength_label already returns "" for the
-        # shootout/zero-skater guard, so only 5v5 needs collapsing here.
-        sit_disp  = "" if sit_label == "5v5" else sit_label
 
-        if nhl_sit:
-            # situationCode present → authoritative. Never consult pp_sit here;
-            # doing so re-admits the stale/over-running ESPN window (e.g. a PP
-            # window that outlives the real penalty would otherwise leak back in
-            # on the 5v5 frame after expiry).
-            situation   = sit_disp
-            # Keep the PP carry-forward warm for any later play that falls into a
-            # situationCode lookup gap but is still inside the ESPN PP window.
-            last_pp_sit = pp_sit if pp_sit else None
-        elif pp_sit:
-            # No situationCode for this play; fall back to the ESPN PP window.
-            situation   = pp_sit
+        if pp_sit:
+            # On a power play. Prefer the situationCode label when it agrees
+            # this is a PP (and it may add EN team info, e.g. '6v4 CAR EN PP').
+            situation   = sit_label if ("PP" in sit_label) else pp_sit
             last_pp_sit = pp_sit
         elif str_txt in ("Power Play", "Shorthanded"):
             # ESPN confirms PP/SH but play falls just outside window boundary
-            situation   = last_pp_sit if last_pp_sit else str_txt
-        elif (str_id == "903" or shot_id == "903"):
-            # ESPN EN tag with no situationCode available — honour ESPN's own
-            # empty-net signal. (When a situationCode exists it already drove the
-            # label above.) Fall back to the ESPN strength text if present.
-            situation   = str_txt if str_txt else "Empty Net"
+            situation = last_pp_sit if last_pp_sit else str_txt
+        elif sit_is_en:
+            # situationCode confirms a pulled goalie — richest EN label
+            situation   = sit_label
             last_pp_sit = None
-        elif any(w["ws"] <= elapsed <= w["we"] for w in en_windows):
-            # Inside a merge-validated NHL EN window but no situationCode here.
-            situation   = "Empty Net"
+        elif (str_id == "903" or shot_id == "903") and sit_is_en:
+            # ESPN EN tag, confirmed by situationCode
+            situation   = sit_label
+            last_pp_sit = None
+        elif any(w["ws"] <= elapsed <= w["we"] for w in en_windows) and sit_is_en:
+            # Inside a merge-validated NHL EN window AND situationCode agrees.
+            # When situationCode disagrees (goalie shown in net), no EN is
+            # displayed — the label must never contradict the data.
+            situation   = sit_label
             last_pp_sit = None
         else:
             last_pp_sit = None
